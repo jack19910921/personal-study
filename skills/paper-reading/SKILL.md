@@ -33,7 +33,7 @@ Read at minimum the **abstract, introduction, and conclusion**. If the full text
 
 ### 4. Generate the draft report
 
-Write the report as a Markdown file and save it to the learning repo (`/root/test`, which is the `personal-study` repo at https://github.com/jack19910921/personal-study).
+Write the report as a Markdown file and save it to the learning repo (`/root/personal-study`, which is the `personal-study` repo at https://github.com/jack19910921/personal-study).
 
 ### 5. Deliver the draft
 

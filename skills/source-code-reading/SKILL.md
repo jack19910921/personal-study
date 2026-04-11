@@ -15,7 +15,7 @@ Deep dive into source code and explain how it works, why it was designed that wa
 
 3. **Analyze in depth** — Read the actual code, not just comments/docstrings. Follow function calls, trace data flow, understand design patterns.
 
-4. **Generate a report** — Write a structured analysis and save it as a markdown file in the user's learning repository (`/root/test`, which is the `personal-study` repo at https://github.com/jack19910921/personal-study).
+4. **Generate a report** — Write a structured analysis and save it as a markdown file in the user's learning repository (`/root/personal-study`, which is the `personal-study` repo at https://github.com/jack19910921/personal-study).
 
 ## Report Structure
 
