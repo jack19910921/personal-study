@@ -13,23 +13,38 @@ Analyze and explain academic papers in a structured, accessible way. Deliver a d
 
 If the user hasn't already made it clear, give a brief acknowledgment before starting — something like "收到，我来解读这篇论文"。Don't over-ask; if the intent is clear, just proceed.
 
-### 1. Identify and fetch the paper
+### 1. Identify the paper
 
-- If the user provided a URL, fetch it. For arXiv links, prefer the abstract page to get metadata (title, authors, abstract) and the PDF for full text.
-- If the user provided a local file path, read it directly.
-- If the user just named a paper, search for it and get the abstract page.
+- If the user provided a URL, extract the paper identifier (arXiv ID, DOI, etc.).
+- If the user provided a local file path, use it directly and skip to step 3.
+- If the user just named a paper, search for its arXiv/DOI link.
 
-### 2. Download resources (best-effort)
+### 2. Download and read the original paper ⚠️ MANDATORY
 
-Try to download:
-- **PDF** — save to `papers/{paper-slug}/pdf/` under the learning repo.
-- **LaTeX source** — if available on arXiv, save to `papers/{paper-slug}/source/`.
+**You MUST read the original paper — do NOT rely on search engine summaries, blog posts, or second-hand interpretations.**
 
-Don't fail the whole process if download fails — note it and continue with whatever content you can read.
+Priority order (try in sequence):
 
-### 3. Read the paper
+1. **Direct PDF read** — Use the `Read` tool on the PDF (either local file or downloaded URL). The Read tool natively supports PDF parsing.
+   - For arXiv: `https://arxiv.org/pdf/{paper_id}.pdf`
+   - For local files: read directly from the provided path
+2. **HTML version** — If PDF read fails, try the arXiv HTML version: `https://arxiv.org/html/{paper_id}v1/`
+3. **Last resort** — If neither works due to network restrictions, use web search to get the paper content, but **explicitly tell the user** that the analysis is based on secondary sources and may be incomplete.
 
-Read at minimum the **abstract, introduction, and conclusion**. If the full text is accessible, read the methodology and experiments too.
+**Critical**: Do NOT use Tavily/web search as the primary method. Search tools return summaries and snippets — they miss tables, figures, exact numbers, methodology details, and nuance. Only use them when direct reading fails.
+
+If you successfully download the PDF, save it to `papers/{paper-slug}/pdf/` under the learning repo.
+
+### 3. Read the full paper
+
+Read the **entire paper** if possible. At minimum:
+- Abstract and introduction (to understand the problem and approach)
+- Methodology section (to understand how they did it)
+- Experiments and results (to understand what they found)
+- Conclusion and limitations
+- If there are appendices, read the most relevant ones
+
+Do NOT skip sections just to save time. A good reading report requires thorough reading.
 
 ### 4. Generate the draft report
 
@@ -120,6 +135,8 @@ Only include diagrams that genuinely help understanding — don't add them just 
 - **深度**: 假设读者有工程背景但不一定是该领域的专家，解释要通俗但准确
 - **重点**: 突出 "这篇文章新在哪" 和 "对我有什么用"，而不是复述已知知识
 - **诚实**: 明确指出论文的不足之处，不盲目背书
+  - 如果因为网络限制无法读取原文，必须在报告开头声明 "本报告基于二手资料，准确度受限"
+  - 区分 "论文说的" 和 "我的推断"，不要把推测当事实
 - **引用**: 如果涉及公式或关键图表，注明原文位置
 - **节奏**: 先交付完整初稿，不默认展开复查；用户明确要求后再深入
 
