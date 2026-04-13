@@ -11,19 +11,19 @@
 
 ## 一句话总结
 
-Claw Code 是 Claude Code 的开源 Rust 替代实现，由 UltraWorkers 社区以"人类给方向、AI 自主执行"的协作模式开发，采用 9 个 crate 的 workspace 架构，实现了完整的 REPL、工具系统、权限控制、MCP 集成、会话管理等核心功能。
+Claw Code 是 Claude Code 的开源 Rust 替代实现，由 UltraWorkers 社区以"人类给方向、AI 自主执行"的协作模式开发，采用 9 个 crate 的 workspace 架构，实现了完整的 REPL、50+ 工具系统、权限控制、MCP 集成、会话管理、流式 Markdown 渲染等核心功能，~20K 行 Rust 代码，workspace 级别 `unsafe_code = "forbid"`。
 
 ## 它解决什么问题
 
 ### 核心问题域
 
-1. **Claude Code 是闭源的**：Anthropic 的 Claude Code 是商业产品，社区无法审计、定制或自主改进
-2. **Python 性能瓶颈**：原版 Claude Code 的某些实现用 Python/TypeScript，在高频 tool-call 场景下性能受限
-3. **多 agent 协作实验**：UltraWorkers 社区希望探索"人类只给方向，多个 AI agent 自主分工执行"的开发模式，需要开源可修改的运行时
+1. **Claude Code 闭源**：Anthropic 的 Claude Code 是商业产品，社区无法审计、定制或自主改进
+2. **多 agent 自主开发实验**：探索"人类只给方向，多个 AI agent 自主分工执行"的开发模式，需要可修改的运行时
+3. **Python 性能瓶颈**：原版某些实现用 Python/TypeScript，高频 tool-call 场景下性能受限
 
 ### 项目的切入点
 
-- 用 Rust 重写，追求**性能、安全（`unsafe_code = "forbid"`）、原生工具执行**
+- 用 Rust 重写，追求性能、安全（`unsafe_code = "forbid"`）、原生工具执行
 - 以 Claude Code 为对标对象（PARITY.md 逐功能对标），实现相同的 CLI 表面
 - 社区驱动，Discord 为主要协作界面，代码是自主开发的产物
 
@@ -34,43 +34,44 @@ flowchart TD
     User[用户输入] --> CLI[rusty-claude-cli<br/>主 CLI 二进制]
 
     CLI --> REPL[REPL 交互<br/>rustyline]
-    CLI --> OneShot[一次性 prompt]
-    CLI --> Direct[直接子命令<br/>status/doctor/mcp/...]
+    CLI --> OneShot[一次性 prompt<br/>--output-format json]
+    CLI --> Direct[直接子命令<br/>status/doctor/mcp/skills]
 
-    REPL --> Runtime[runtime crate<br/>ConversationRuntime]
-    OneShot --> Runtime
-    Direct --> Runtime
+    REPL --> RT[ConversationRuntime<br/>对话循环核心]
+    OneShot --> RT
+    Direct --> RT
 
-    Runtime --> API[api crate<br/>Anthropic/OpenAI 客户端]
-    Runtime --> Tools[tools crate<br/>Bash/Read/Write/Edit/Grep/...]
-    Runtime --> Config[配置加载<br/>权限策略]
-    Runtime --> MCP[MCP 生命周期管理]
-    Runtime --> Session[会话持久化<br/>jsonl]
+    RT --> API[api crate<br/>ProviderClient]
+    RT --> Tools[tools crate<br/>50+ 工具调度]
+    RT --> Perm[PermissionPolicy<br/>权限策略]
+    RT --> MCP[McpServerManager<br/>MCP 生命周期]
+    RT --> Session[Session<br/>jsonl 持久化]
 
-    API --> Anthropic[Anthropic API<br/>SSE 流式]
-    API --> OpenAI[OpenAI 兼容 API]
-    API --> Cache[Prompt Cache<br/>缓存优化]
+    API --> Anthropic[AnthropicClient<br/>SSE 流式 + 重试]
+    API --> OpenAI[OpenAiCompatClient<br/>xAI / DashScope]
+    API --> Cache[PromptCache<br/>缓存优化]
 
-    Tools --> BashExec[Bash 执行<br/>沙箱/验证]
-    Tools --> FileOps[文件操作<br/>Read/Write/Edit]
-    Tools --> Search[搜索<br/>Grep/Glob/Web]
+    Tools --> BashExec[execute_bash<br/>tokio + sandbox]
+    Tools --> FileOps[read/write/edit_file]
+    Tools --> Search[grep/glob/web]
+    Tools --> Agent[Agent 子 agent<br/>Worker/Team/Cron]
     Tools --> Plugin[插件工具<br/>bundled hooks]
 
-    Config --> Perm[权限系统<br/>allow/deny/ask]
-    MCP --> MCPLifecycle[MCP 服务器<br/>启动/连接/恢复]
+    Perm --> Enforcer[PermissionEnforcer<br/>allow/deny/prompt]
+    MCP --> Lifecycle[11 阶段生命周期<br/>ConfigLoad→Cleanup]
 
-    Session --> Jsonl[jsonl 会话文件]
-    Session --> Telemetry[遥测数据<br/>tracing]
+    Session --> Jsonl[jsonl 文件<br/>流式追加]
+    Session --> Telemetry[遥测追踪<br/>SessionTracer]
 ```
 
 ### 模块划分原则
 
 ```
 rust/
-├── Cargo.toml              # workspace root
+├── Cargo.toml              # workspace root, resolver = "2"
 └── crates/
-    ├── api/                # 网络层：HTTP 客户端 + API 协议 + 流式解析
-    ├── commands/           # 命令层：斜杠命令定义 + help 渲染
+    ├── api/                # 网络协议层：HTTP 客户端 + API 协议 + 流式解析
+    ├── commands/           # 命令注册层：斜杠命令定义 + help 渲染
     ├── compat-harness/     # 兼容层：从上游 TS 提取工具/提示清单
     ├── mock-anthropic-service/ # 测试：本地 mock Anthropic 服务
     ├── plugins/            # 插件层：元数据 + 安装/启用/禁用 + hooks
@@ -81,83 +82,325 @@ rust/
 ```
 
 **关注点分离策略**：
-- **api** 只管网络协议和 API 响应解析，不碰文件系统
-- **runtime** 管对话状态和生命周期，但不直接执行工具
-- **tools** 管工具执行，但不决定何时调用（那是 runtime 的职责）
+- **api** 只管网络协议和 API 响应解析（`AnthropicClient`、`SseParser`、`OpenAiCompatClient`），不碰文件系统
+- **runtime** 管对话状态和生命周期（`ConversationRuntime`），但不直接执行工具，通过 `ToolExecutor` trait 抽象
+- **tools** 管工具执行（`execute_tool` match 50+ 工具），但不决定何时调用
 - **commands** 只管命令解析和 help 文本，不碰业务逻辑
-- **plugins** 是纯元数据和 hook 集成
+- **plugins** 是纯元数据和 hook 集成，不直接执行
 
 **扩展点设计**：
 - `ToolExecutor` trait：允许注册自定义工具
-- MCP 协议：动态加载外部工具服务器
+- MCP 协议：动态加载外部工具服务器（11 阶段生命周期管理）
 - Plugin 系统：安装/启用/禁用第三方插件
 - Skill 系统：可安装的技能和模板
+- `PermissionEnforcer`：可插拔的权限策略
 
 ## 核心流程解析
 
-### 流程 1：一次用户请求是如何被处理的
+### 流程 1：一次用户请求的完整生命周期
 
 ```mermaid
 sequenceDiagram
     participant U as 用户
     participant CLI as CLI/REPL
     participant RT as ConversationRuntime
-    participant API as Anthropic Client
-    participant T as Tool Executor
-    participant FS as 文件系统
+    participant API as AnthropicClient
+    participant T as execute_tool
+    participant FS as 文件系统/网络
 
     U->>CLI: 输入 prompt / REPL 消息
-    CLI->>RT: 组装 MessageRequest
-    RT->>API: 发送 API 请求 (SSE)
-    API-->>RT: 流式返回 ContentBlock
-    RT-->>CLI: 实时渲染文本输出
+    CLI->>RT: run_turn(input, permission_prompter)
+    RT->>RT: push_user_text → session.messages
+    RT->>RT: loop: iterations++
 
-    alt 模型决定调用工具
-        API-->>RT: ToolUse content block
-        RT->>T: 执行工具 (Bash/Read/Write/etc)
-        T->>FS: 执行文件操作或命令
-        FS-->>T: 返回结果
-        T-->>RT: ToolResult
-        RT->>API: 发送 ToolResult (下一轮)
-        API-->>RT: 继续流式响应
+    RT->>API: stream(MessageRequest)
+    API->>API: send_with_retry (max 8 次, 指数退避)
+    API-->>API: SseParser: 解析 \n\n 帧
+    API-->>RT: Vec<StreamEvent> (流式)
+    RT->>RT: build_assistant_message(events)
+
+    alt 纯文本响应
+        RT-->>CLI: text + MessageStop
+        CLI-->>U: MarkdownStreamState 实时渲染
+    else 包含 ToolUse
+        API-->>RT: ToolUse { id, name, input }
+        RT->>RT: PreToolUse hook (可修改 input/取消)
+        RT->>Perm: permission_policy.authorize()
+
+        alt 允许
+            RT->>T: execute_tool(name, input)
+            T->>FS: Bash/Read/Write/等
+            FS-->>T: stdout/stderr/result
+            T-->>RT: output string
+            RT->>RT: PostToolUse hook (可修改 output)
+        else 拒绝
+            RT->>RT: PermissionOutcome::Deny { reason }
+        end
+
+        RT->>RT: push tool_result → session.messages
+        RT->>API: 下一轮，带上 ToolResult
     end
 
-    RT-->>CLI: 完整响应
-    CLI-->>U: 显示结果 + 继续 REPL
+    RT->>RT: maybe_auto_compact()
+    RT->>RT: persist_session (save_to_path)
+    RT-->>CLI: TurnSummary
+    CLI-->>U: 显示结果
 ```
 
-**关键代码路径**：`rust/crates/rusty-claude-cli/src/main.rs` → `rust/crates/runtime/src/conversation.rs` → `rust/crates/api/src/client.rs`
+**核心代码路径**（`runtime/src/conversation.rs:314-515`）：
 
-**核心循环** (`ConversationRuntime`)：
-1. 组装 `MessageRequest`（系统提示 + 历史 + 新消息 + 工具定义）
-2. 通过 `ApiClient` 发送请求，解析 SSE 流
-3. 遇到 `ToolUse` 时暂停，调用对应工具
-4. 将 `ToolResult` 作为下一轮消息发回 API
-5. 循环直到模型不再调用工具
-6. 将会话持久化到 jsonl 文件
+```rust
+pub fn run_turn(&mut self, user_input: impl Into<String>, mut prompter: Option<&mut dyn PermissionPrompter>) -> Result<TurnSummary, RuntimeError> {
+    // 1. 推入用户消息到 session
+    self.session.push_user_text(user_input).map_err(...)?;
 
-### 流程 2：权限系统如何工作
+    // 2. 核心循环：API 调用 → 工具执行 → 循环
+    loop {
+        iterations += 1;
+        if iterations > self.max_iterations { return Err(...); }
 
-```mermaid
-flowchart TD
-    A[工具调用请求] --> B{PermissionEnforcer}
-    B --> C{检查 PermissionPolicy}
-    C -->|允许模式| D[直接执行]
-    C -->|拒绝模式| E[返回拒绝错误]
-    C -->|询问模式| F[提示用户批准/拒绝]
-    F -->|批准| D
-    F -->|拒绝| E
-    D --> G[执行工具]
-    E --> H[告知模型权限被拒]
+        // 2a. 发送请求，SSE 流式接收
+        let events = self.api_client.stream(request)?;
+
+        // 2b. 解析流为 assistant message
+        let (assistant_message, usage, cache_events) = build_assistant_message(events)?;
+
+        // 2c. 推入 session
+        self.session.push_message(assistant_message)?;
+
+        // 2d. 提取待执行的 ToolUse
+        let pending_tool_uses = assistant_message.blocks.iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, name, input } => Some(...)
+                _ => None
+            }).collect();
+
+        // 2e. 没有工具要执行 → 跳出
+        if pending_tool_uses.is_empty() { break; }
+
+        // 2f. 逐个执行工具
+        for (tool_use_id, tool_name, input) in pending_tool_uses {
+            // PreToolUse hook → 权限检查 → 执行 → PostToolUse hook
+            let permission_outcome = self.permission_policy.authorize_with_context(...);
+            let result_message = match permission_outcome {
+                PermissionOutcome::Allow => {
+                    let (output, is_error) = self.tool_executor.execute(&tool_name, &effective_input);
+                    // 执行 hook 反馈
+                    let post_hook = self.run_post_tool_use_hook(...);
+                    ConversationMessage::tool_result(tool_use_id, tool_name, output, is_error)
+                }
+                PermissionOutcome::Deny { reason } => {
+                    ConversationMessage::tool_result(tool_use_id, tool_name, reason, true)
+                }
+            };
+            self.session.push_message(result_message)?;
+        }
+    }
+
+    // 3. 自动压缩
+    let auto_compaction = self.maybe_auto_compact();
+
+    // 4. 返回摘要
+    Ok(TurnSummary { assistant_messages, tool_results, usage, iterations, auto_compaction })
+}
 ```
 
-**关键代码**：`rust/crates/runtime/src/permission_enforcer.rs` + `rust/crates/runtime/src/permissions.rs`
+**关键设计细节**：
 
-**权限模式**：
-- `danger-full-access`：默认模式，允许所有操作（危险）
-- `allow-list`：只允许白名单中的工具
-- `deny-list`：拒绝黑名单中的工具
-- `prompt`：每次工具调用前询问用户
+1. **迭代上限保护**：`max_iterations` 防止无限 tool-use 循环
+2. **Session 健康探针**：压缩后通过 `glob_search("*.health-check-probe-")` 验证 tool executor 仍然响应
+3. **Hook 链**：PreToolUse 可修改 input 或取消执行，PostToolUse 可修改 output 或标记错误
+4. **自动压缩**：当 `input_tokens` 超过阈值时自动压缩历史消息
+5. **工具并行执行**：同一轮中多个 ToolUse 是顺序执行的（for 循环），不是并行
+
+### 流程 2：API 流式通信与 SSE 解析
+
+**AnthropicClient 发送请求**（`api/src/providers/anthropic.rs:339-359`）：
+
+```rust
+pub async fn stream_message(&self, request: &MessageRequest) -> Result<MessageStream, ApiError> {
+    self.preflight_message_request(request).await?;  // 预检请求大小/缓存
+    let response = self.send_with_retry(&request.clone().with_streaming()).await?;
+    Ok(MessageStream {
+        request_id: request_id_from_headers(response.headers()),
+        response,
+        parser: SseParser::new().with_context("Anthropic", request.model.clone()),
+        pending: VecDeque::new(),
+        done: false,
+        ...
+    })
+}
+```
+
+**重试策略**（`send_with_retry`）：
+- 最大重试次数：8 次（`DEFAULT_MAX_RETRIES`）
+- 指数退避：初始 1 秒，最大 128 秒
+- 只对 retryable 错误重试（网络错误、5xx 等）
+
+**SSE 解析器**（`api/src/sse.rs:28-39`）：
+
+```rust
+pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<StreamEvent>, ApiError> {
+    self.buffer.extend_from_slice(chunk);
+    let mut events = Vec::new();
+    while let Some(frame) = self.next_frame() {
+        if let Some(event) = self.parse_frame_with_context(&frame)? {
+            events.push(event);
+        }
+    }
+    Ok(events)
+}
+```
+
+**帧分割逻辑**（`next_frame`）：
+- 同时支持 `\n\n` 和 `\r\n\r\n` 分隔符
+- 从 buffer 中 drain 已处理的帧
+- 注释行（`:` 开头）被跳过
+- `ping` 事件和 `[DONE]` 标记被过滤
+
+**`build_assistant_message`**（`runtime/src/conversation.rs:706-753`）：
+
+```rust
+fn build_assistant_message(events: Vec<AssistantEvent>) -> Result<...> {
+    let mut text = String::new();
+    let mut blocks = Vec::new();
+
+    for event in events {
+        match event {
+            AssistantEvent::TextDelta(delta) => text.push_str(&delta),  // 增量拼文本
+            AssistantEvent::ToolUse { id, name, input } => {
+                flush_text_block(&mut text, &mut blocks);  // 先 flush 文本
+                blocks.push(ContentBlock::ToolUse { id, name, input });  // 再推入工具块
+            }
+            AssistantEvent::Usage(value) => usage = Some(value),
+            AssistantEvent::PromptCache(event) => prompt_cache_events.push(event),
+            AssistantEvent::MessageStop => { finished = true; }
+        }
+    }
+
+    flush_text_block(&mut text, &mut blocks);  // 最后 flush 剩余的文本
+
+    if !finished { return Err("stream ended without message stop"); }
+    if blocks.is_empty() { return Err("stream produced no content"); }
+
+    Ok((ConversationMessage::assistant_with_usage(blocks, usage), usage, cache_events))
+}
+```
+
+### 流程 3：50+ 工具调度系统
+
+**工具分发**（`tools/src/lib.rs:1189-1290`）：
+
+`execute_tool` 是一个巨大的 `match name` 语句，覆盖了 50+ 种工具：
+
+| 类别 | 工具 | 说明 |
+|------|------|------|
+| **核心** | `bash` | Shell 命令执行（tokio 异步 + sandbox） |
+| **文件** | `read_file`, `write_file`, `edit_file` | 文件读写和编辑 |
+| **搜索** | `glob_search`, `grep_search` | 文件名和内容搜索 |
+| **网络** | `WebFetch`, `WebSearch` | 网页获取和搜索 |
+| **笔记本** | `NotebookEdit` | Jupyter 笔记本编辑 |
+| **Agent** | `Agent`, `TaskCreate`, `TaskUpdate`, `TaskStop`, `TaskGet`, `TaskList`, `TaskOutput` | 子 Agent 和任务管理 |
+| **Worker** | `WorkerCreate`, `WorkerGet`, `WorkerObserve`, `WorkerAwaitReady`, `WorkerSendPrompt`, `WorkerRestart`, `WorkerTerminate` | 多 Worker 管理 |
+| **Team** | `TeamCreate`, `TeamDelete` | 多 Agent 团队协作 |
+| **Cron** | `CronCreate`, `CronDelete`, `CronList` | 定时任务 |
+| **MCP** | `MCP`, `ListMcpResources`, `ReadMcpResource`, `McpAuth` | MCP 工具调用 |
+| **远程** | `RemoteTrigger` | 远程触发 |
+| **LSP** | `LSP` | 语言服务器协议 |
+| **辅助** | `TodoWrite`, `Skill`, `ToolSearch`, `Sleep`, `SendUserMessage`, `Config`, `EnterPlanMode`, `ExitPlanMode`, `StructuredOutput`, `REPL`, `AskUserQuestion` | 辅助工具 |
+| **PowerShell** | `PowerShell` | Windows PowerShell 执行 |
+
+**Bash 执行核心**（`runtime/src/bash.rs:70+`）：
+
+```rust
+pub struct BashCommandInput {
+    pub command: String,
+    pub timeout: Option<u64>,
+    pub description: Option<String>,
+    pub run_in_background: Option<bool>,
+    pub dangerouslyDisableSandbox: Option<bool>,
+    pub namespace_restrictions: Option<bool>,
+    pub isolate_network: Option<bool>,
+    pub filesystem_mode: Option<FilesystemIsolationMode>,
+    pub allowed_mounts: Option<Vec<String>>,
+}
+```
+
+后台任务支持：通过 `run_in_background` 启动后台进程，返回 `background_task_id`。
+
+### 流程 4：权限系统
+
+**PermissionEnforcer**（`runtime/src/permission_enforcer.rs`）：
+
+```rust
+pub fn check(&self, tool_name: &str, input: &str) -> EnforcementResult {
+    // Prompt 模式 defer 给交互式 prompter
+    if self.policy.active_mode() == PermissionMode::Prompt {
+        return EnforcementResult::Allowed;
+    }
+
+    let outcome = self.policy.authorize(tool_name, input, None);
+    match outcome {
+        PermissionOutcome::Allow => EnforcementResult::Allowed,
+        PermissionOutcome::Deny { reason } => EnforcementResult::Denied { ... }
+    }
+}
+
+// 动态权限分类（如 bash 命令）
+pub fn check_with_required_mode(&self, tool_name: &str, input: &str, required_mode: PermissionMode) -> EnforcementResult {
+    let active_mode = self.policy.active_mode();
+    if active_mode >= required_mode {  // 模式有序比较
+        return EnforcementResult::Allowed;
+    }
+    EnforcementResult::Denied { ... }
+}
+```
+
+**文件写入权限**：`check_file_write` 检查写入路径是否在工作区内（`is_within_workspace`）。
+
+### 流程 5：MCP 11 阶段生命周期
+
+**MCP 生命周期阶段**（`runtime/src/mcp_lifecycle_hardened.rs`）：
+
+```
+ConfigLoad → ServerRegistration → SpawnConnect → InitializeHandshake
+→ ToolDiscovery → ResourceDiscovery → Ready → Invocation
+→ ErrorSurfacing → Shutdown → Cleanup
+```
+
+每个阶段都有独立的错误处理、可恢复性判断和时间戳记录。`McpErrorSurface` 包含：
+- 失败阶段（`McpLifecyclePhase`）
+- 服务器名
+- 错误消息
+- 上下文（BTreeMap）
+- 是否可恢复（`recoverable`）
+- 时间戳
+
+### 流程 6：终端 Markdown 流式渲染
+
+**MarkdownStreamState**（`render.rs:601-625`）：
+
+```rust
+pub struct MarkdownStreamState {
+    pending: String,  // 等待完整 markdown 片段的缓冲
+}
+
+impl MarkdownStreamState {
+    pub fn push(&mut self, renderer: &TerminalRenderer, delta: &str) -> Option<String> {
+        self.pending.push_str(delta);
+        let split = find_stream_safe_boundary(&self.pending)?;  // 找到安全切分点
+        let ready = self.pending[..split].to_string();
+        self.pending.drain(..split);
+        Some(renderer.markdown_to_ansi(&ready))  // 转为 ANSI 转义序列
+    }
+}
+```
+
+**嵌套 fence 处理**（`normalize_nested_fences`）：
+- LLM 经常在代码块内再嵌代码块（``` 内含 ```）
+- 自动检测并升级外层 fence 的反引号数量，防止 pulldown-cmark 提前闭合
+
+**语法高亮**：使用 `syntect` 做 24-bit 终端颜色转义。
 
 ## 关键设计决策
 
@@ -165,35 +408,102 @@ flowchart TD
 |------|-------------|------|
 | Rust 重写而非 Python/TS | 性能、内存安全、原生工具执行速度 | 开发门槛高，社区贡献者需要懂 Rust |
 | 9 crate 的 workspace | 关注点分离，每个 crate 职责明确 | 跨 crate 依赖管理复杂 |
-| `unsafe_code = "forbid"` | 安全性优先，防止不安全代码引入 | 某些场景需要 unsafe 绕过（如 FFI）时受限 |
+| `unsafe_code = "forbid"` | 安全性优先，防止不安全代码引入 | 某些场景需要 unsafe 绕过时受限 |
 | jsonl 会话格式 | 流式追加、易解析、支持 resume | 大会话文件可能很大 |
 | PARITY.md 对标 Claude Code | 明确开发目标，避免功能遗漏 | 被对标方的更新需要持续追赶 |
-| Discord 为主要协作界面 | 人类不需要坐在终端前，可以异步给指令 | 依赖外部平台，脱离 Discord 后操作困难 |
-| 多 agent 自主开发模式 | 探索新的软件开发范式 | 代码质量可能不稳定，需要强 review |
+| 巨大的 match 分发工具 | 编译期类型安全，零运行时开销 | `execute_tool` 函数超长（100+ 行） |
+| 工具执行在 `tools` crate 中 | 与 runtime 解耦，runtime 只通过 trait 调用 | 工具需要跨 crate 的 type 依赖 |
+| SSE 自解析而非用库 | 控制解析行为，精确处理 Anthropic 格式 | 需要自己处理 `\n\n` 和 `\r\n\r\n` |
+| 流式 markdown 状态机 | 在 LLM 还在输出时就能渲染 | 需要处理不完整 markdown 的切分 |
+| 多 provider 统一 `ProviderClient` enum | 调用方不用关心具体 provider | 新增 provider 需要修改 enum |
 
 ## 精妙之处
 
-1. **Mock Anthropic Service**（`crates/mock-anthropic-service/`）：实现了一个完全本地运行的 Anthropic API 模拟服务，支持流式、tool-use、多轮对话。这使得不需要真实 API 就能跑完整的端到端测试（PARITY.md 中的 10 个场景全部通过 mock 验证）
+### 1. Mock Anthropic Service（测试利器）
 
-2. **Prompt Cache 系统**（`crates/api/src/prompt_cache.rs`）：实现了 Anthropic 的 prompt caching 功能，记录哪些 message block 被缓存了，统计缓存命中率。这对降低 API 成本很关键
+`crates/mock-anthropic-service/` 实现了一个完全本地运行的 Anthropic API 模拟服务，支持：
+- 流式响应（`/v1/messages` 的 SSE 格式）
+- ToolUse 响应
+- 多轮对话
 
-3. **MCP 生命周期硬化**（`rust/crates/runtime/src/mcp_lifecycle_hardened.rs`）：实现了 MCP 服务器的启动、连接、故障恢复的完整生命周期管理，包括降级报告、失败阶段识别等
+这使得不需要真实 API 就能跑完整的端到端测试。PARITY.md 中的 10 个场景全部通过 mock 验证：
+`streaming_text`, `read_file_roundtrip`, `grep_chunk_assembly`, `write_file_allowed`, `write_file_denied`, `multi_tool_turn_roundtrip`, `bash_stdout_roundtrip`, `bash_permission_prompt_approved/denied`, `plugin_tool_roundtrip`
 
-4. **Git 分支锁**（`rust/crates/runtime/src/branch_lock.rs`）：在多 agent 协作场景下，防止多个 agent 同时操作同一 git 分支的冲突机制
+### 2. Hook 链设计
 
-5. **Summary Compression**（`rust/crates/runtime/src/summary_compression.rs`）：当会话过长时，压缩历史消息为摘要，释放 token 空间
+工具执行前后各有一对 hook：
+```
+PreToolUse → 可修改 input/取消/拒绝
+    ↓ (如果允许)
+execute_tool
+    ↓
+PostToolUse / PostToolUseFailure → 可修改 output/标记错误
+```
+
+Hook 的反馈通过 `merge_hook_feedback` 合并到最终输出中：
+```rust
+fn merge_hook_feedback(messages: &[String], output: String, is_error: bool) -> String {
+    let label = if is_error { "Hook feedback (error)" } else { "Hook feedback" };
+    format!("{output}\n\n{label}:\n{}", messages.join("\n"))
+}
+```
+
+### 3. Prompt Cache 系统
+
+`api/src/prompt_cache.rs` 实现了 Anthropic 的 prompt caching：
+- 记录哪些 message block 被缓存了
+- 统计缓存命中率（`PromptCacheStats`）
+- 降低重复请求的 token 成本
+
+### 4. 分支锁（Branch Lock）
+
+`runtime/src/branch_lock.rs`：在多 agent 协作场景下，防止多个 agent 同时操作同一 git 分支的冲突机制。
+
+### 5. Summary Compression
+
+`runtime/src/summary_compression.rs`：当会话过长时，压缩历史消息为摘要，释放 token 空间。`maybe_auto_compact` 在每次 turn 结束时检查 `input_tokens` 阈值，自动触发压缩。
+
+### 6. Session 健康探针
+
+压缩后通过一个无害的 `glob_search("*.health-check-probe-")` 验证 tool executor 仍然响应，确保压缩没有破坏会话状态。
+
+### 7. 权限模式的有序比较
+
+```rust
+if active_mode >= required_mode { ... }
+```
+
+权限模式是有序枚举（如 `ReadOnly < WorkspaceWrite < DangerFullAccess`），通过 `>=` 运算符直接比较权限级别是否满足要求，而不是逐一枚举。
 
 ## 可以改进的地方
 
-1. **main.rs 过大（410KB）**：主 CLI 入口文件包含了所有子命令处理、REPL 逻辑、流式渲染、插件初始化等。应该拆分为多个模块文件
+### 1. main.rs 过大（410KB）
 
-2. **大量 `allow` 注解**：main.rs 开头有 `#![allow(dead_code, unused_imports, unused_variables, ...)]`，说明代码中有大量未清理的死代码和未使用导入
+主 CLI 入口文件包含了所有子命令处理、REPL 逻辑、流式渲染、插件初始化等。`LiveCli` impl 块从 ~3132 行开始，`handle_repl_command` 有 170+ 行 match 臂。应该拆分为多个模块文件。
 
-3. **Python src/ 目录的定位模糊**：README 说 `src/` 是"companion Python/reference workspace"，但没有明确说明它是参考实现还是仍在维护的并行版本
+### 2. 大量 `allow` 注解
 
-4. **ROADMAP.md 长达 86KB**：说明积压了大量待办事项和已知问题，代码质量和功能完整性可能参差不齐
+```rust
+#![allow(dead_code, unused_imports, unused_variables, clippy::unneeded_struct_pattern, clippy::unnecessary_wraps, clippy::unused_self)]
+```
 
-5. **会话 JSON 文件堆积**：`.claude/sessions/` 目录下有大量 session 文件，说明自主开发过程中产生了大量中间状态，但缺少自动清理机制
+main.rs 开头的这一行说明代码中有大量未清理的死代码和未使用导入，这在高迭代频率的自主开发项目中是常见现象。
+
+### 3. `execute_tool` 函数过长
+
+`tools/src/lib.rs:1189` 处的 `execute_tool_with_enforcer` 是一个超过 100 行的 match 语句，覆盖 50+ 工具。虽然编译期类型安全，但可读性差，添加新工具需要修改这个函数。
+
+### 4. Python src/ 目录定位模糊
+
+README 说 `src/` 是"companion Python/reference workspace"，但没有明确说明它是参考实现还是仍在维护的并行版本。
+
+### 5. ROADMAP.md 长达 86KB
+
+说明积压了大量待办事项和已知问题，代码质量和功能完整性可能参差不齐。
+
+### 6. 工具执行是顺序的
+
+同一轮中多个 ToolUse 是 for 循环顺序执行的，不支持并行工具调用。对于独立的工具（如同时 read 多个文件），并行执行可以显著减少延迟。
 
 ## 学习收获
 
@@ -205,32 +515,41 @@ flowchart TD
 
 3. **Crate 职责边界清晰**：api 只管协议，runtime 只管状态，tools 只管执行，commands 只管命令解析。这种拆分方式值得在 Rust 项目中借鉴
 
-4. **unsafe_code = "forbid"**：在工作区级别禁止 unsafe 代码，强制使用安全 Rust。对于 CLI 工具来说，这是合理的默认选择
+4. **Hook 链设计**：Pre/Post hook 模式可以在工具执行前后拦截、修改、拒绝操作，非常适合做审计、安全审查、自动修复
+
+5. **SSE 自解析**：不依赖第三方库，自己实现 `\n\n` 帧分割 + 字段解析，精确控制错误处理和上下文信息
+
+6. **流式 Markdown 状态机**：`MarkdownStreamState` 通过 `pending` buffer + `find_stream_safe_boundary` 实现不完整的 markdown 片段的实时渲染
+
+7. **权限模式有序比较**：通过枚举的 `>=` 运算符实现权限级别比较，比逐一 match 更简洁
 
 ### 可应用到自己的项目
 
-- 在评估 LLM 产品时，可以参考 PARITY.md 的模式，逐功能对标竞品
-- 需要和外部 API 交互的项目，可以借鉴 mock-anthropic-service 的模式
+- 在评估 LLM 产品时，参考 PARITY.md 的模式，逐功能对标竞品
+- 需要和外部 API 交互的项目，借鉴 mock-anthropic-service 的模式
 - 多 agent 协作场景下的分支锁机制可以借鉴到自己的 git 工作流
 - 会话的 jsonl 格式比 json 更适合流式追加的场景
+- Hook 链设计可用于任何需要拦截/审计/自动修复的工具执行场景
 
 ## 关键文件索引
 
-| 文件 | 职责 |
-|------|------|
-| `rust/crates/rusty-claude-cli/src/main.rs` | CLI 入口、参数解析、REPL、流式渲染 |
-| `rust/crates/runtime/src/conversation.rs` | 核心对话循环：发送请求→接收响应→执行工具→持久化 |
-| `rust/crates/runtime/src/lib.rs` | Runtime 公开接口、模块导出 |
-| `rust/crates/api/src/client.rs` | Anthropic/OpenAI HTTP 客户端、OAuth、SSE 流式 |
-| `rust/crates/api/src/lib.rs` | API 公开接口、类型导出 |
-| `rust/crates/tools/src/lib.rs` | 工具注册、执行分发（Bash/Read/Write/Grep/Glob 等） |
-| `rust/crates/runtime/src/permission_enforcer.rs` | 权限判断和执行 |
-| `rust/crates/runtime/src/mcp_lifecycle_hardened.rs` | MCP 服务器生命周期管理 |
-| `rust/crates/mock-anthropic-service/src/main.rs` | 本地 mock Anthropic 服务 |
-| `rust/Cargo.toml` | Workspace 定义、依赖声明 |
-| `PARITY.md` | 功能对标清单 |
-| `PHILOSOPHY.md` | 项目理念和协作模式 |
-| `ROADMAP.md` | 待办事项和已知问题 |
+| 文件 | 职责 | 关键行号 |
+|------|------|---------|
+| `rust/crates/rusty-claude-cli/src/main.rs` | CLI 入口、参数解析、REPL、流式渲染 | `run()`:180, `parse_args()`:392, `run_repl()`:3047, `run_turn()`:3742 |
+| `rust/crates/runtime/src/conversation.rs` | 核心对话循环：发送请求→接收响应→执行工具→持久化 | `run_turn()`:314, `build_assistant_message()`:706 |
+| `rust/crates/api/src/providers/anthropic.rs` | Anthropic HTTP 客户端、OAuth、SSE 流式、重试 | `stream_message()`:339, `send_with_retry()`:401 |
+| `rust/crates/api/src/sse.rs` | SSE 帧解析器 | `push()`:28, `parse_frame_with_provider()`:86 |
+| `rust/crates/tools/src/lib.rs` | 工具注册、执行分发（50+ 工具） | `execute_tool_with_enforcer()`:1193 |
+| `rust/crates/runtime/src/bash.rs` | Bash 命令执行（tokio + sandbox） | `execute_bash()`:70 |
+| `rust/crates/runtime/src/permission_enforcer.rs` | 权限判断和执行 | `check()`:39, `check_with_required_mode()`:70 |
+| `rust/crates/runtime/src/mcp_lifecycle_hardened.rs` | MCP 11 阶段生命周期管理 | `McpLifecyclePhase`:14, `McpErrorSurface`:67 |
+| `rust/crates/rusty-claude-cli/src/render.rs` | 终端 Markdown 渲染 + Spinner | `MarkdownStreamState`:601, `normalize_nested_fences()`:652 |
+| `rust/crates/api/src/client.rs` | ProviderClient 统一接口 | `stream_message()`:92 |
+| `rust/crates/mock-anthropic-service/src/main.rs` | 本地 mock Anthropic 服务 | - |
+| `rust/Cargo.toml` | Workspace 定义、依赖声明 | - |
+| `PARITY.md` | 功能对标清单 | - |
+| `PHILOSOPHY.md` | 项目理念和协作模式 | - |
+| `ROADMAP.md` | 待办事项和已知问题 | - |
 
 ## 术语解释
 
@@ -246,7 +565,21 @@ flowchart TD
 | **OmX (oh-my-codex)** | 工作流层，将短指令转化为结构化执行 |
 | **jsonl** | JSON Lines 格式，每行一个 JSON 对象，适合流式追加 |
 | **rustyline** | Rust 的 readline 实现，用于 REPL 交互 |
+| **pulldown-cmark** | Rust 的 CommonMark 解析器，用于终端 Markdown 渲染 |
+| **syntect** | Rust 的语法高亮库（Sublime Text 引擎），用于代码块着色 |
+| **tokio** | Rust 异步运行时，用于 Bash 执行和 MCP 通信 |
 
 ## 复查记录
 
-- 2026-04-13 23:30: 初版完成。基于 shallow clone（depth 1）和 GitHub API 文件浏览。聚焦了核心架构、Rust workspace 的 9 个 crate、主对话循环、权限系统、工具系统、mock 测试。未覆盖：Python src/ 参考实现、每个工具的具体实现细节、完整的 slash 命令列表。
+- 2026-04-13 23:30: 初版完成。基于 shallow clone 和 GitHub API 文件浏览。聚焦了核心架构、Rust workspace 的 9 个 crate、主对话循环、权限系统、工具系统、mock 测试。
+- 2026-04-13 23:50: **深度复查** — 逐行阅读了核心源码文件：
+  - `main.rs`：CLI 参数解析（~700 行）、REPL 循环（~70 行）、LiveCli 结构体、run_turn 方法
+  - `conversation.rs`：核心 `run_turn` 循环（200 行）、`build_assistant_message`（50 行）、自动压缩、session 健康探针
+  - `api/src/providers/anthropic.rs`：`stream_message`、`send_with_retry` 重试策略（8 次，指数退避 1-128s）
+  - `api/src/sse.rs`：SSE 帧解析（支持 `\n\n` 和 `\r\n\r\n`）、帧分割逻辑
+  - `tools/src/lib.rs`：50+ 工具分发（100+ 行 match）、GlobalToolRegistry
+  - `runtime/src/bash.rs`：BashCommandInput（支持 sandbox/background/timeout）、execute_bash
+  - `runtime/src/permission_enforcer.rs`：权限判断、模式有序比较、文件写入边界检查
+  - `runtime/src/mcp_lifecycle_hardened.rs`：11 阶段生命周期、McpErrorSurface
+  - `render.rs`：MarkdownStreamState（流式渲染）、Spinner、嵌套 fence 处理
+  - 新增内容：完整的 run_turn 代码分析、SSE 解析细节、50+ 工具列表、Hook 链设计、流式 Markdown 渲染原理、权限模式有序比较、session 健康探针
