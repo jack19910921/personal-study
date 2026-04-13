@@ -583,3 +583,173 @@ README 说 `src/` 是"companion Python/reference workspace"，但没有明确说
   - `runtime/src/mcp_lifecycle_hardened.rs`：11 阶段生命周期、McpErrorSurface
   - `render.rs`：MarkdownStreamState（流式渲染）、Spinner、嵌套 fence 处理
   - 新增内容：完整的 run_turn 代码分析、SSE 解析细节、50+ 工具列表、Hook 链设计、流式 Markdown 渲染原理、权限模式有序比较、session 健康探针
+- 2026-04-14 00:30: **全量深度复查** — 逐文件读完剩余全部代码，新增以下章节：
+
+### 流程 7：Hook 链完整实现
+
+**HookRunner**（`runtime/src/hooks.rs`，全文 1117 行）：
+
+```
+PreToolUse → 可修改 input/取消/拒绝
+    ↓ (如果允许)
+execute_tool
+    ↓
+PostToolUse / PostToolUseFailure → 可修改 output/标记错误
+```
+
+每个 hook 是独立的 shell 命令，通过环境变量传递上下文：
+```
+HOOK_EVENT=PreToolUse
+HOOK_TOOL_NAME=bash
+HOOK_TOOL_INPUT={"command":"ls"}
+HOOK_TOOL_OUTPUT=...
+```
+
+Hook 退出码语义：
+- `0` → Allow（hook 批准）
+- `2` → Deny（明确拒绝）
+- 其他非零 → Failed（hook 自身出错）
+
+Hook stdout 输出可以是纯文本或 JSON 对象。JSON 格式支持：
+```json
+{
+  "systemMessage": "审核通过",
+  "hookSpecificOutput": {
+    "permissionDecision": "allow|deny|ask",
+    "permissionDecisionReason": "原因",
+    "updatedInput": {"command": "修改后的命令"}
+  }
+}
+```
+
+**多 hook 串行执行**：配置多个 hook 时按顺序执行，第一个 Deny/Failed 就短路返回。支持 `HookAbortSignal` 在任意时刻取消正在运行的 hook。
+
+### 流程 8：会话持久化与自动轮转
+
+**Session**（`runtime/src/session.rs`，全文 1546 行）：
+
+存储格式采用 JSONL（JSON Lines），每行一个 JSON 对象：
+```
+{"type":"session_meta","version":1,"session_id":"session-...","created_at_ms":...}
+{"type":"message","message":{"role":"user","blocks":[{"type":"text","text":"hello"}]}}
+{"type":"message","message":{"role":"assistant","blocks":[{"type":"text","text":"hi"}]}}
+{"type":"compaction","count":1,"removed_message_count":4,"summary":"..."}
+{"type":"prompt_history","timestamp_ms":...,"text":"..."}
+```
+
+**原子写入**：先写 `.tmp-{timestamp}-{counter}` 临时文件，再 `fs::rename`，防止写入中断导致文件损坏。
+
+**自动轮转**：session 文件超过 256KB 时自动 rename 为 `.rot-{timestamp}.jsonl`，最多保留 3 个历史文件，超出自动清理。
+
+**双格式兼容**：`load_from_path` 优先检测是否为 JSON 对象格式（旧格式），否则按 JSONL 解析，支持向后兼容。
+
+**Session Fork**：复制完整消息历史，生成新 session_id，记录 `parent_session_id` 和 `branch_name`，用于多 agent 分支调试。
+
+**时间戳单调递增**：`current_time_millis()` 使用 CAS 循环确保即使在 tight loop 中也不会产生重复或回退的时间戳。
+
+### 流程 9：会话压缩与工具角色配对保护
+
+**compact.rs**（全文 826 行）：
+
+自动压缩触发条件：`input_tokens >= 100,000`（可通过 `CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS` 环境变量调整）。
+
+压缩策略：
+1. 保留最近 N 条消息（默认 4 条）
+2. 将其余消息汇总为结构化摘要
+3. 注入合成 system 消息作为新上下文
+
+**关键防御 — 工具角色配对保护**（lines 121-158）：
+压缩边界不能拆分 `assistant(ToolUse) → tool(ToolResult)` 对。如果第一个保留的消息是 ToolResult，会向前回溯直到找到对应的 ToolUse，否则 OpenAI 兼容路径会返回 400 错误。
+
+```rust
+// 如果保留的第一条是 ToolResult，向前回溯
+if starts_with_tool_result {
+    let preceding_has_tool_use = preceding.blocks.iter()
+        .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+    if preceding_has_tool_use {
+        k = k.saturating_sub(1); // 包含 assistant ToolUse
+    } else {
+        k = k.saturating_sub(1); // 继续回溯
+    }
+}
+```
+
+摘要格式使用 `<summary>` XML 标签包裹，包含消息数量统计、工具使用记录、待办事项、关键文件引用和时间线。多次压缩时会合并新旧摘要（"Previously compacted context" + "Newly compacted context"）。
+
+### 流程 10：多级权限决策链
+
+**permissions.rs**（全文 684 行）：
+
+权限模式有序枚举（使用 `#[derive(PartialOrd, Ord)]`）：
+```
+ReadOnly < WorkspaceWrite < DangerFullAccess < Prompt < Allow
+```
+
+决策顺序：
+1. **Deny 规则匹配** → 立即拒绝
+2. **Hook override**（Deny/Ask/Allow）→ 按 hook 指示处理
+3. **Ask 规则匹配** → 强制提示用户审批
+4. **Allow 规则匹配** 或 **active_mode >= required_mode** → 放行
+5. **WorkspaceWrite + DangerFullAccess 工具** → 提示用户审批
+6. 其他 → 拒绝，提示需要更高级别权限
+
+**PermissionRule 语法**：
+- `bash` → 匹配所有 bash 调用
+- `bash(git:*)` → 前缀匹配：命令以 "git" 开头的 bash
+- `bash(rm -rf /tmp/x)` → 精确匹配：命令必须是 "rm -rf /tmp/x"
+
+`extract_permission_subject` 从 JSON 输入中提取关键字段（`command`、`path`、`file_path`、`url` 等）用于规则匹配。
+
+### 流程 11：OpenAI 兼容适配层
+
+**openai_compat.rs**（全文 1797 行）：
+
+一个 `OpenAiCompatClient` 适配 3 个 provider：
+- **xAI**（`https://api.x.ai/v1`）
+- **OpenAI**（`https://api.openai.com/v1`）
+- **DashScope**（`https://dashscope.aliyuncs.com/compatible-mode/v1`，阿里通义千问）
+
+**模型路由**：通过 `is_reasoning_model()` 识别推理模型（o1/o3/o4/grok-3-mini/qwq/thinking），自动剥离 temperature、top_p 等不被接受的参数。
+
+**GPT-5 兼容**：`max_tokens_key` 字段根据模型名自动切换 `max_tokens` vs `max_completion_tokens`（gpt-5* 需要后者）。
+
+**请求构建器严格处理**：
+- `normalize_object_schema`：递归补全 JSON Schema 中缺失的 `properties` 和 `additionalProperties: false`
+- `sanitize_tool_message_pairing`：删除孤立的 `role:"tool"` 消息（没有前置 assistant `tool_calls` 对应），防止 400 错误
+- `deserialize_null_as_empty_vec`：处理 `"tool_calls": null` 的畸形响应
+
+**流式状态机**：`StreamState` 跟踪 `message_started/text_started/text_finished/finished`，按顺序发出 `MessageStart → ContentBlockStart → ContentBlockDelta → ContentBlockStop → MessageDelta → MessageStop` 事件。
+
+**退避抖动算法**（lines 282-321）：
+```rust
+fn jitter_for_base(base: Duration) -> Duration {
+    // 纳秒时间戳 + 单调计数器混合 → splitmix64 哈希
+    let mixed = raw_nanos.wrapping_add(tick).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    mixed ^= mixed >> 31;
+    Duration::from_nanos(mixed % base_nanos)
+}
+```
+保证多个并发客户端重试时间不重叠。
+
+### 流程 12：MCP 状态机验证
+
+**mcp_lifecycle_hardened.rs**（全文 844 行）：
+
+`McpLifecycleValidator` 实现了状态机级别的转换验证：
+
+```
+ConfigLoad → ServerRegistration → SpawnConnect → InitializeHandshake
+→ ToolDiscovery → {ResourceDiscovery} → Ready ↔ Invocation
+→ {ErrorSurfacing} → Shutdown → Cleanup
+```
+
+关键特性：
+- 每个阶段都有独立时间戳
+- 失败时自动转入 `ErrorSurfacing` 状态
+- `recoverable` 标记控制是否允许从 ErrorSurfacing 回到 Ready
+- `McpDegradedReport` 输出可用服务器、失败服务器、可用工具、缺失工具清单
+- 任何非 Cleanup 状态都可以转到 Shutdown
+
+## 可改进的地方
