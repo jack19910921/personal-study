@@ -1,105 +1,220 @@
 ---
 name: source-code-reading
-description: Deep dive into source code — explain how a library, framework, or codebase works internally. Use when the user asks to "explain this code", "how does X work under the hood", "walk me through this codebase", "源码解读", or wants to understand the internals of a library or framework. Also triggers when the user wants to analyze a specific file, module, or function in depth. Make sure to use this skill whenever the user needs to understand code beyond surface-level explanation.
+description: 适用于用户提供 GitHub 仓库链接、本地代码路径或库名，并希望解读源码、分析架构、理解核心模块设计、生成源码解读报告时使用。会下载或定位代码、创建分析目录、生成源码解读报告。默认先交付初稿，不自动复查；如果用户明确同意，再安排后续复查。不适用于只要一句简介或只想克隆仓库的情况。
 ---
 
-# Source Code Reading
+# 源码解读助手
 
 Deep dive into source code and explain how it works, why it was designed that way, and what you can learn from it.
 
-## Workflow
+## 适用场景
 
-1. **Locate the code** — If the user named a library, find it (installed locally, or search on GitHub). If they provided a file path, read it directly. If they gave a GitHub URL, fetch the relevant files.
+使用本 skill：
+- 用户提供 GitHub 仓库链接，并明确要"解读源码 / 分析架构 / 理解原理 / 生成报告"
+- 用户想了解某个库、框架或工具的核心模块是怎么实现的
+- 用户想把一个开源项目梳理成可读的中文源码文档
 
-2. **Map the structure** — For a codebase, start from the entry point and trace the main execution path. For a single file, understand its role in the larger picture first.
+不要使用本 skill：
+- 用户只想克隆仓库
+- 用户只想要一句简介或推荐语
+- 用户要解读论文或普通技术文章（用 paper-reading）
 
-3. **Analyze in depth** — Read the actual code, not just comments/docstrings. Follow function calls, trace data flow, understand design patterns.
+## 设计模式
 
-4. **Generate a report** — Write a structured analysis and save it as a markdown file in the user's learning repository (`/root/personal-study`, which is the `personal-study` repo at https://github.com/jack19910921/personal-study).
+本 skill 主要采用：
+- **Pipeline**：按"定位代码 → 建目录 → 阅读分析 → 生成报告 → 交付 → 如有需要再复查"的顺序执行
+- **Generator**：基于固定报告结构生成可长期迭代的文档
+- **Inversion（轻度）**：开始前先确认分析范围，复查前再次征求用户同意
 
-## Report Structure
+## Gotchas
 
-Use this template for the report:
+- 不要把"只想克隆仓库"误判成"源码解读"
+- 不要假装已经全读完大型仓库；必须说明本次聚焦的模块
+- 不要默认安排复查；是否复查必须先征求用户确认
+- 不要凭空编造运行命令、依赖关系、架构细节
+- 不要只复述注释和 docstring，要真正读代码逻辑、数据流和控制流
+- 不要只发路径不发文件；如果当前渠道支持发文件，应优先直接发送报告文件
 
-```markdown
-# Source Code Reading: [Library/Module Name]
+## 核心交付
 
-> **Version**: [Version number or commit hash]
-> **Source**: [GitHub URL or package link]
-> **Reading Date**: [Date]
+在合适的 `~/personal-study/source-code/` 子目录下创建分析目录，并产出源码解读报告：
+- `<library-name>-<topic>.md`
 
-## 一句话总结
+可额外产出：
+- `structure.txt`（仓库结构文件）
+- `metadata.json`（仓库元数据）
 
-[One sentence: what is this, and why is it worth reading?]
+报告结构参考 `references/report-outline.md`。
 
-## 它解决什么问题
+## 工作流
 
-[What problem does this library/module solve? What pain point existed before it?]
+### 0. 先确认分析范围（必须先做）
 
-## 整体架构
+开始前先向用户确认或声明本次分析范围，至少覆盖：
 
-[High-level architecture. Use ASCII diagram if helpful.]
+- 是否聚焦某个模块，还是做整体导读
+- 最终交付以本地文档为主，而不是在对话中直接长篇展开
 
-```
-┌─────────────┐
-│   Entry     │
-└──────┬──────┘
-       │
-  ┌────┴────┐
-  │         │
-Module A  Module B
-```
+如果用户已经明确说了"解读源码/分析架构/生成报告"，可直接进入执行，并在回复里顺手说明本次范围。
 
-## 核心流程解析
+### 1. 确定工作目录
 
-### [Key flow 1, e.g. "请求是如何被处理的"]
+按以下优先级选择输出目录：
+1. 用户明确指定的目录
+2. 当前上下文里已存在且明显合适的 `~/personal-study/source-code/` 子目录
+3. 默认使用 `~/personal-study/source-code/<library-name>/`
 
-[Step-by-step walkthrough with code snippets. Cite file paths and line numbers.]
+不要凭空发明新目录。无法确定时直接使用默认值。
 
-### [Key flow 2]
+### 2. 定位代码
 
-[Same pattern.]
+按以下优先级获取代码：
 
-## 关键设计决策
+1. 用户提供了本地文件路径 → 直接读取，跳到步骤 4
+2. 用户提供了 GitHub 仓库链接 → 运行 bootstrap 脚本分析
+3. 用户只提供了库/项目名 → 搜索 GitHub 仓库链接，回到步骤 2
 
-| 决策 | 为什么这么做 | 代价 |
-|------|-------------|------|
-| [Design choice] | [Reasoning] | [Trade-off] |
+对 GitHub 仓库，需要快速完成仓库定位、结构导出、元数据生成时，运行：
 
-## 精妙之处
-
-[Highlight clever/well-designed code patterns worth learning from.]
-
-## 可以改进的地方
-
-[Potential issues, outdated patterns, or areas that could be better.]
-
-## 学习收获
-
-[What can we apply to our own code? Practical takeaways.]
-
-## 关键文件索引
-
-| 文件 | 职责 |
-|------|------|
-| `path/to/file.py` | [What this file does] |
+```bash
+python3 skills/source-code-reading/scripts/bootstrap_source_analysis.py '<github_url>' '<base_dir>'
 ```
 
-## Writing Guidelines
+其中 `base_dir` 默认是 `~/personal-study/source-code`。
 
-- **语言**: 用中文写报告，代码注释和变量名保留原文
+脚本会：
+- 解析 GitHub URL 提取 owner 和 repo
+- 检查 `~/personal-study/coding/github` 中是否已存在该仓库
+- 如果不存在，提示用户克隆
+- 创建分析目录
+- 导出目录结构（排除 node_modules、__pycache__ 等噪音目录）
+- 统计各语言代码行数
+- 记录仓库路径、分支、最后提交时间
+- 写入 `metadata.json`
+
+优先读取脚本输出 JSON 中的 `repo_path`、`analysis_dir`、`metadata_path`、`structure_path`。
+
+如果脚本不可用，就手动完成以下事情：
+- 创建分析目录
+- 导出目录结构
+- 记录仓库路径、分支、最后提交时间等基础信息
+
+### 3. 阅读与分析
+
+至少覆盖这些内容：
+- `README.md` 和核心文档
+- 依赖或构建文件，如 `package.json`、`pyproject.toml`、`Cargo.toml`、`go.mod`
+- 入口文件（如 `src/index.ts`、`main.py`、`src/main.rs`）
+- 主要源码目录
+- 测试、示例、文档目录
+
+**大型仓库不要假装"全读完了"。** 要明确说明本次聚焦的模块或子系统。
+
+### 4. 生成报告
+
+报告写入分析目录下的 `<library-name>-<topic>.md`，并满足：
+
+- 中文输出
+- 结构完整，适合长期迭代
+- 不凭空编造代码中不存在的设计或行为
+- 对不确定内容明确写"代码未明确体现"或"需要进一步核对"
+- 关键逻辑一定要引用具体的文件和行号（如 `src/handler.py:42-58`）
+- 在合适位置调用 mermaid 生成架构图或流程图
+- 如果需要产出多份报告，继续沿用标题做前缀，通过后缀区分
+
+优先使用 [report-outline.md](references/report-outline.md) 中的结构。
+
+### 5. 输出要求
+
+**生成初版报告后，必须立即执行以下两步。注意：必须先发送文件，再汇报信息。不要反过来。**
+
+#### 第一步：交付报告文件
+
+- 交付报告文件：`<library-name>-<topic>.md`
+- 如果当前渠道支持文件发送，优先直接发送文件
+- 如果当前渠道不支持文件发送，至少明确给出可访问路径
+- 提醒用户这是初稿
+- 如果你判断值得继续复查，可以补一句"如有需要我可以再复查一轮"，但不要默认已安排
+
+示例：
+```
+✅ 源码解读初稿已生成！
+
+📄 报告文件：<报告文件路径或文件>
+📝 当前版本：v1.0 初稿
+如果你要，我可以再复查一轮，补充架构细节和边界分析。
+```
+
+#### 第二步：汇报基本信息
+
+- 仓库/项目名与本地路径
+- 输出目录路径
+- 本次聚焦模块
+- 还没验证的部分
+- 是否建议复查（如需复查必须先征求用户确认）
+
+如果当前渠道支持发文件，就直接发送文件；如果不支持，就至少给出可点击路径。
+
+### 6. 复查（仅用户确认后执行）
+
+初版报告完成后，默认流程到此结束。
+
+只有在用户明确同意"继续复查"之后，才可以进入后续完善流程：
+
+- 先问用户要不要复查，不要自己默认安排
+- 用户同意后，才可安排复查
+- 复查时不要整篇推倒重写，遵循增量更新：
+  - 先读取当前报告文件
+  - 再看仓库是否有更新
+  - 补充遗漏架构细节、使用场景、设计思想
+  - 必要时验证报告的准确性
+  - 在"复查记录"一节写明更新时间、主要新增内容、修正内容
+
+## 报告写作要求
+
+报告至少覆盖这些内容：
+
+- 项目基本信息
+- 一句话总结
+- 它解决什么问题
+- 整体架构
+- 核心流程解析
+- 关键设计决策
+- 精妙之处
+- 可以改进的地方
+- 学习收获
+- 关键文件索引
+- 复查记录
+
+### Mermaid 图表
+
+调用 mermaid skill 时可优先考虑这些图：
+
+- 整体架构：`flowchart TD` / `flowchart LR`
+- 数据流/调用链：`sequenceDiagram`
+- 模块关系：`graph TD`
+
+只保留真正能帮助理解的图；调用 mermaid skill 时不要为了凑数量而加图。
+
+### 写作指南
+
+- **语言**: 用中文写报告，代码注释和变量名保留原文，专业术语保留英文原文，首次出现时附中文解释
 - **深度**: 不要只复述注释和 docstring，要真正读代码逻辑、数据流和控制流
 - **引用**: 关键逻辑一定要引用具体的文件和行号（如 `src/handler.py:42-58`）
 - **对比**: 如果同类库有多个实现（比如 Flask vs FastAPI 的路由机制），对比分析它们的设计差异
-- **实用**: 最终落脚点是 "我能从中学到什么" 和 "怎么用在我的项目里"
+- **诚实**: 明确指出分析的不足之处，不盲目背书
+  - 区分"代码体现的"和"我的推断"，不要把推测当事实
+- **实用**: 最终落脚点是"我能从中学到什么"和"怎么用在我的项目里"
+- **节奏**: 先交付完整初稿，不默认展开复查；用户明确要求后再深入
 
-## File Naming
+## 文件管理
 
-Save reports as: `source-code/[library-name]-[topic].md` in the learning repo.
+- 分析目录：`~/personal-study/source-code/<library-name>/`
+- 代码仓库：`~/personal-study/coding/github/<repo_name>/`
+- 元数据：`<分析目录>/metadata.json`
+- 报告文件：`<分析目录>/<library-name>-<topic>.md`
 
-Example: `source-code/flask-request-lifecycle.md`
+## 交付后
 
-## After Writing
-
-1. Commit the file to git with message: `add source reading: [short title]`
-2. Push to the remote repo
+1. 将报告文件提交到 git，提交信息格式：`add source reading: [short title]`
+2. 推送到远程仓库

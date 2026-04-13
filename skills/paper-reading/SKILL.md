@@ -1,155 +1,222 @@
 ---
 name: paper-reading
-description: Analyze and explain academic papers. Use when the user provides a paper URL, PDF, arXiv link, DOI, or asks about a specific research paper. Also triggers for requests to "explain this paper", "summarize this paper", "read this paper", "paper on", or when the user pastes paper content/abstract. Makes sure to use this skill whenever academic papers, research articles, or technical documents need to be broken down and explained. Make sure to use this skill when the user mentions arXiv, ACL, NeurIPS, ICML, CVPR, EMNLP, or any academic conference/journal paper.
+description: 适用于用户发送 arXiv 论文链接、DOI、PDF 路径，或要求"论文解读""论文拆解""详细总结""生成报告""下载论文"时使用。会创建论文工作区、下载 PDF 与 TeX Source（如有）、生成中文 Markdown 报告并保存到 personal-study 仓库。不适用于只要简短推荐语的情况。
 ---
 
 # Paper Reading
 
 Analyze and explain academic papers in a structured, accessible way. Deliver a draft first, then optionally review for deeper detail if the user confirms.
 
-## Workflow
+## 适用场景
 
-### 0. Quick confirmation (optional)
+- 用户发来 arXiv 论文链接、PDF 路径、DOI，或要求"论文解读""论文拆解""详细总结""生成报告""下载论文"
+- 用户希望把论文资料落到本地目录，再生成一份结构完整、适合持续完善的中文报告
+- 用户接受以本地文件为主交付，而不是只在对话里看一段摘要
 
-If the user hasn't already made it clear, give a brief acknowledgment before starting — something like "收到，我来解读这篇论文"。Don't over-ask; if the intent is clear, just proceed.
+如果用户只要一段 200 字左右的推荐语，不要使用本 skill。
 
-### 1. Identify the paper
+## 设计模式
 
-- If the user provided a URL, extract the paper identifier (arXiv ID, DOI, etc.).
-- If the user provided a local file path, use it directly and skip to step 3.
-- If the user just named a paper, search for its arXiv/DOI link.
+本 skill 主要采用：
+- **Pipeline**：严格按"下载资料 → 阅读原文 → 生成初稿 → 交付 → 如有需要再复查"的顺序执行
+- **Generator**：基于固定报告结构生成可长期迭代的文档
+- **Inversion（轻度）**：开始前先确认范围，复查前再次征求用户同意
 
-### 2. Download and read the original paper ⚠️ MANDATORY
+## Gotchas
 
-**You MUST read the original paper — do NOT rely on search engine summaries, blog posts, or second-hand interpretations.**
+- **不要假装已经读完全文**；如果只重点看了摘要、方法、实验，要明确说明
+- **不要编造论文中不存在的实验、公式、结论或数据**
+- **不要把"论文推荐语"误判成"论文解读"**
+- **不要默认安排复查**；是否复查必须先征求用户确认
+- **不要只发路径不发文件**；如果当前渠道支持发文件，应优先直接发送报告文件
+- **不要用 web 搜索代替原文阅读**；搜索工具返回的是摘要和片段，会丢失表格、图表、精确数字、方法论细节和细微差别。只有在直接阅读失败时才使用搜索
+- 区分"论文说的"和"我的推断"，不要把推测当事实
 
-Priority order (try in sequence):
+## 工作流
 
-1. **Direct PDF read** — Use the `Read` tool on the PDF (either local file or downloaded URL). The Read tool natively supports PDF parsing.
-   - For arXiv: `https://arxiv.org/pdf/{paper_id}.pdf`
-   - For local files: read directly from the provided path
-2. **HTML version** — If PDF read fails, try the arXiv HTML version: `https://arxiv.org/html/{paper_id}v1/`
-3. **Last resort** — If neither works due to network restrictions, use web search to get the paper content, but **explicitly tell the user** that the analysis is based on secondary sources and may be incomplete.
+### 0. 先确认执行范围（必须先做）
 
-**Critical**: Do NOT use Tavily/web search as the primary method. Search tools return summaries and snippets — they miss tables, figures, exact numbers, methodology details, and nuance. Only use them when direct reading fails.
+开始前先给用户一个简短确认，至少说清这 3 件事：
 
-If you successfully download the PDF, save it to `papers/{paper-slug}/pdf/` under the learning repo.
+- 会把论文下载到本地并生成中文报告
+- 初版默认先完成一版，不自动安排复查
+- 最终以文件为主交付，而不是直接在对话里长篇输出全文
 
-### 3. Read the full paper
+如果用户已经明确接受"下载到本地 + 生成报告"的工作方式，可以直接继续，不必反复确认。
 
-Read the **entire paper** if possible. At minimum:
-- Abstract and introduction (to understand the problem and approach)
-- Methodology section (to understand how they did it)
-- Experiments and results (to understand what they found)
-- Conclusion and limitations
-- If there are appendices, read the most relevant ones
+### 1. 确定保存目录
 
-Do NOT skip sections just to save time. A good reading report requires thorough reading.
+按以下优先级选择基础目录：
 
-### 4. Generate the draft report
+1. 用户明确指定的目录
+2. 当前上下文中明显属于用户常用工作区的目录
+3. `~/personal-study/papers`
 
-Write the report as a Markdown file and save it to the learning repo (`/root/personal-study`, which is the `personal-study` repo at https://github.com/jack19910921/personal-study).
+不要凭空发明新目录。无法确定时直接使用默认值。
 
-### 5. Deliver the draft
+### 2. 确定论文来源
 
-After the draft is done, tell the user:
+按以下优先级获取论文：
 
-```
-论文初稿已生成：{file path}
+1. 用户提供了本地 PDF 路径 → 直接用 Read 工具读取
+2. 用户提供了 arXiv 链接 → 运行 bootstrap 脚本下载 PDF + TeX Source + 元数据
+3. 用户只提供了论文名称 → 搜索 arXiv/DOI 链接，回到步骤 2
+4. 用户提供了 DOI 或其他来源 → 尝试获取 PDF 文件
 
-如果你需要更详细的实验细节、公式推导或边界条件，我可以复查一轮。
-```
+### 3. 初始化论文工作区（arXiv 论文）
 
-### 6. Review (only if user confirms)
+对 arXiv 论文，先运行 bootstrap 脚本创建目录结构并下载资源：
 
-If the user wants more detail, do an incremental update — don't rewrite the whole report. Append a review section or create a `_review.md` companion file. Record what was changed and why.
-
-## Report Structure
-
-Use this template for the report:
-
-```markdown
-# Paper Reading: [Paper Title]
-
-> **Authors**: [Author list]
-> **Published**: [Year/Venue]
-> **Source**: [URL or DOI]
-> **Reading Date**: [Date]
-
-## 一句话总结
-
-[One sentence summary in Chinese]
-
-## 核心问题
-
-[What problem does this paper try to solve? Why does it matter?]
-
-## 核心方法
-
-[How does the paper approach the problem? Key technical contributions. Use mermaid diagrams if they help clarify architecture or flow.]
-
-## 关键创新点
-
-1. [Innovation 1]
-2. [Innovation 2]
-3. [Innovation 3]
-
-## 实验与结果
-
-[Key experiments, datasets, metrics, and results. Highlight what's impressive vs. what's merely adequate. Include comparison tables if helpful.]
-
-## 优点
-
-- [Strength 1]
-- [Strength 2]
-
-## 局限与不足
-
-- [Limitation 1]
-- [Limitation 2]
-
-## 对我 (blog_sre) 的启发
-
-[How does this paper relate to the user's work/interests? Practical takeaways.]
-
-## 关键术语
-
-| 术语 | 解释 |
-|------|------|
-| [Term] | [Explanation in Chinese] |
+```bash
+python3 skills/paper-reading/scripts/bootstrap_arxiv_paper.py '<arxiv_url>' '<base_dir>'
 ```
 
-## Mermaid Diagrams
+其中 `base_dir` 默认是 `~/personal-study/papers`。
 
-When the paper describes system architecture, data flow, or process steps, consider adding mermaid diagrams:
+脚本会：
 
-- `flowchart TD` or `flowchart LR` — for system architecture and processing pipelines
-- `sequenceDiagram` — for interaction flows between components
-- `graph TD` — for dependency or hierarchy
+- 解析 arXiv ID
+- 使用 `YYYY-MM-{论文标题}` 创建带日期的子文件夹
+- 下载 PDF（以论文标题命名）
+- 尝试下载 TeX Source
+- 可识别时自动解包到 `source/`
+- 写入 `metadata.json`（包含作者、摘要、分类、发布时间等）
+- 如报告文件不存在，则创建报告骨架
 
-Only include diagrams that genuinely help understanding — don't add them just for the sake of having visuals.
+优先读取脚本输出 JSON 中的 `paper_dir`、`report_path`、`pdf_path`、`source_path`。
 
-## Writing Guidelines
+### 4. 阅读原文 ⚠️ MANDATORY
+
+**你必须阅读原文——不要依赖搜索引擎摘要、博客文章或二手解读。**
+
+生成报告前，按以下顺序获取信息：
+
+1. `metadata.json` — 了解论文基本信息（作者、摘要、分类、发布时间）
+2. arXiv 摘要页 — 补充确认（如需要）
+3. `TeX Source`（如果下载成功，优先用它确认公式、模块名、算法步骤）
+4. PDF 文件（以论文标题命名）— 全文精读
+
+PDF 读取失败时的降级顺序：
+
+1. **HTML 版本** — 尝试 arXiv HTML 版本：`https://arxiv.org/html/{paper_id}v1/`
+2. **最后手段** — 如果以上都因网络限制失败，使用 web 搜索获取论文内容，但**必须在报告开头明确声明**分析基于二手资料，可能不完整
+
+### 5. 阅读全篇论文
+
+阅读**整篇论文**，至少覆盖：
+
+- 摘要和引言（理解问题和思路）
+- 方法论部分（理解他们怎么做）
+- 实验和结果（理解他们发现了什么）
+- 结论和局限性
+- 如果有附录，阅读最相关的部分
+
+**不要因为省时间而跳过章节。** 一份好的解读报告需要全面阅读。
+
+### 6. 生成初版报告
+
+报告写入论文目录下的 `{论文标题}_报告.md`，并满足：
+
+- 中文输出
+- 结构完整，适合长期迭代
+- 不编造论文中不存在的实验、公式或结论
+- 对不确定内容明确写"论文未明确说明"或"需要进一步核对"
+- 在合适位置调用 mermaid skill 生成 Mermaid 图，至少 1 张，通常 2-3 张更合适
+- 如果需要产出多份报告，继续沿用标题做前缀，通过后缀区分，例如 `{论文标题}_报告_复查1.md`
+
+优先使用 [report-outline.md](references/report-outline.md) 中的结构。
+
+### 7. 输出要求
+
+**生成初版报告后，必须立即执行以下两步。注意：必须先发送文件，再汇报信息。不要反过来。**
+
+#### 第一步：交付报告文件
+
+- 交付报告文件：`{论文标题}_报告.md`
+- 如果当前渠道支持文件发送，优先直接发送文件
+- 如果当前渠道不支持文件发送，至少明确给出可访问路径
+- 提醒用户这是初稿
+- 如果你判断值得继续复查，可以补一句"如有需要我可以再复查一轮"，但不要默认已安排
+
+示例：
+```
+✅ 论文初稿已生成！
+
+📄 报告文件：<报告文件路径或文件>
+📝 当前版本：v1.0 初稿
+如果你要，我可以再复查一轮，补实验细节和边界条件。
+```
+
+#### 第二步：汇报基本信息
+
+- 论文目录路径
+- PDF 文件是否下载成功
+- TeX Source 是否下载成功（如不可得要明确说明"源文件不可得"）
+- 报告文件路径
+- 是否建议复查（如需复查必须先征求用户确认）
+
+如果 TeX Source 不存在或下载失败，要明确说明"源文件不可得"，但仍继续完成报告。
+
+### 8. 复查（仅用户确认后执行）
+
+初版报告完成后，默认流程到此结束。
+
+只有在用户明确同意"继续复查"之后，才可以进入后续完善流程：
+
+- 先问用户要不要复查，不要自己默认安排
+- 用户同意后，才可安排 1 次或多次延迟复查
+- 复查时不要整篇推倒重写，遵循增量更新：
+  - 先读取当前报告文件
+  - 再检查论文原文、PDF、Source 与当前报告的差异
+  - 优先补充遗漏的实验细节、方法边界、限制条件、图示或术语解释
+  - 在"复查记录"一节写明更新时间、主要新增内容、修正内容
+  - 不删除用户手工补充的内容，除非确认其与论文事实冲突
+
+## 报告写作要求
+
+报告至少覆盖这些内容：
+
+- 论文基本信息
+- 一句话总结
+- 要解决的问题与研究动机
+- 方法拆解
+- 训练或推理流程
+- 实验设置与关键结果
+- 亮点、局限、适用边界
+- 对实际应用或研究延展的判断
+- 术语解释
+- 复查记录
+
+### Mermaid 图表
+
+调用 mermaid skill 时可优先考虑这些图：
+
+- 方法总览：`flowchart LR` / `flowchart TD`
+- 训练或推理阶段：`sequenceDiagram` 或 `flowchart`
+- 模块关系：`graph TD`
+
+只保留真正能帮助理解的图；调用 mermaid skill 时不要为了凑数量而加图。
+
+### 写作指南
 
 - **语言**: 用中文写报告，专业术语保留英文原文，首次出现时附中文解释
 - **深度**: 假设读者有工程背景但不一定是该领域的专家，解释要通俗但准确
-- **重点**: 突出 "这篇文章新在哪" 和 "对我有什么用"，而不是复述已知知识
+- **重点**: 突出"这篇文章新在哪"和"对我有什么用"，而不是复述已知知识
 - **诚实**: 明确指出论文的不足之处，不盲目背书
-  - 如果因为网络限制无法读取原文，必须在报告开头声明 "本报告基于二手资料，准确度受限"
-  - 区分 "论文说的" 和 "我的推断"，不要把推测当事实
+  - 如果因为网络限制无法读取原文，必须在报告开头声明"本报告基于二手资料，准确度受限"
+  - 区分"论文说的"和"我的推断"，不要把推测当事实
 - **引用**: 如果涉及公式或关键图表，注明原文位置
 - **节奏**: 先交付完整初稿，不默认展开复查；用户明确要求后再深入
 
-## File Naming
+## 文件管理
 
-Save reports as: `papers/[year]-[month]-[short-title].md` in the learning repo.
+- 论文目录：`~/personal-study/papers/YYYY-MM-{short-title}/`
+- PDF 文件：`{论文目录}/{论文标题}.pdf`
+- TeX Source：`{论文目录}/source/`
+- 元数据：`{论文目录}/metadata.json`
+- 报告文件：`{论文目录}/{论文标题}_报告.md`
 
-Example: `papers/2026-04-attention-is-all-you-need.md`
+## 交付后
 
-PDF files go to: `papers/[year]-[month]-[short-title]/pdf/`
-LaTeX source goes to: `papers/[year]-[month]-[short-title]/source/` (if available)
-
-## After Writing
-
-1. Commit the file to git with message: `add paper reading: [short title]`
-2. Push to the remote repo
+1. 将论文目录和报告文件提交到 git，提交信息格式：`add paper reading: [short title]`
+2. 推送到远程仓库
