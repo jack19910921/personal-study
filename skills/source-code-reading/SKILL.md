@@ -37,8 +37,9 @@ Deep dive into source code and explain how it works, why it was designed that wa
 
 ## 核心交付
 
-在合适的 `~/personal-study/source-code/` 子目录下创建分析目录，并产出源码解读报告：
-- `<library-name>-<topic>.md`
+在合适的 `~/personal-study/source-code/` 子目录下创建分析目录，并产出两份文档：
+- `<repo_name>_源码解读.md`
+- `<repo_name>_快速上手.md`
 
 可额外产出：
 - `structure.txt`（仓库结构文件）
@@ -62,7 +63,7 @@ Deep dive into source code and explain how it works, why it was designed that wa
 按以下优先级选择输出目录：
 1. 用户明确指定的目录
 2. 当前上下文里已存在且明显合适的 `~/personal-study/source-code/` 子目录
-3. 默认使用 `~/personal-study/source-code/<library-name>/`
+3. 默认使用 `~/personal-study/source-code/<repo_name>/`
 
 不要凭空发明新目录。无法确定时直接使用默认值。
 
@@ -70,7 +71,7 @@ Deep dive into source code and explain how it works, why it was designed that wa
 
 按以下优先级获取代码：
 
-1. 用户提供了本地文件路径 → 直接读取，跳到步骤 4
+1. 用户提供了本地文件路径 → 直接读取，跳到步骤 3
 2. 用户提供了 GitHub 仓库链接 → 运行 bootstrap 脚本分析
 3. 用户只提供了库/项目名 → 搜索 GitHub 仓库链接，回到步骤 2
 
@@ -110,9 +111,10 @@ python3 skills/source-code-reading/scripts/bootstrap_source_analysis.py '<github
 
 **大型仓库不要假装"全读完了"。** 要明确说明本次聚焦的模块或子系统。
 
-### 4. 生成报告
+### 4. 生成两份文档
 
-报告写入分析目录下的 `<library-name>-<topic>.md`，并满足：
+#### 源码解读文档
+报告写入分析目录下的 `<repo_name>_源码解读.md`，并满足：
 
 - 中文输出
 - 结构完整，适合长期迭代
@@ -122,7 +124,19 @@ python3 skills/source-code-reading/scripts/bootstrap_source_analysis.py '<github
 - 在合适位置调用 mermaid 生成架构图或流程图
 - 如果需要产出多份报告，继续沿用标题做前缀，通过后缀区分
 
-优先使用 [report-outline.md](references/report-outline.md) 中的结构。
+优先使用 [report-outline.md](references/report-outline.md) 中的源码解读模板。
+
+#### 快速上手文档
+同时生成 `<repo_name>_快速上手.md`，至少包括：
+
+- 环境要求（操作系统、语言版本、工具链）
+- 安装步骤（基于真实的构建命令，不要凭空猜测）
+- 配置说明（环境变量、配置文件）
+- 最小可运行示例
+- 常见问题（从 README、issue 或实际经验中整理）
+- 下一步建议（先读哪些源码文件）
+
+快速上手文档的命令和步骤尽量基于 `README.md`、`package.json`、`pyproject.toml` 等构建文件中的真实内容。
 
 ### 5. 输出要求
 
@@ -130,7 +144,7 @@ python3 skills/source-code-reading/scripts/bootstrap_source_analysis.py '<github
 
 #### 第一步：交付报告文件
 
-- 交付报告文件：`<library-name>-<topic>.md`
+- 交付报告文件：`<repo_name>_源码解读.md` 和 `<repo_name>_快速上手.md`
 - 如果当前渠道支持文件发送，优先直接发送文件
 - 如果当前渠道不支持文件发送，至少明确给出可访问路径
 - 提醒用户这是初稿
@@ -140,7 +154,8 @@ python3 skills/source-code-reading/scripts/bootstrap_source_analysis.py '<github
 ```
 ✅ 源码解读初稿已生成！
 
-📄 报告文件：<报告文件路径或文件>
+📄 源码解读：<报告文件路径或文件>
+📄 快速上手：<快速上手文件路径或文件>
 📝 当前版本：v1.0 初稿
 如果你要，我可以再复查一轮，补充架构细节和边界分析。
 ```
@@ -209,10 +224,11 @@ python3 skills/source-code-reading/scripts/bootstrap_source_analysis.py '<github
 
 ## 文件管理
 
-- 分析目录：`~/personal-study/source-code/<library-name>/`
+- 分析目录：`~/personal-study/source-code/<repo_name>/`
 - 代码仓库：`~/personal-study/coding/github/<repo_name>/`
 - 元数据：`<分析目录>/metadata.json`
-- 报告文件：`<分析目录>/<library-name>-<topic>.md`
+- 报告文件：`<分析目录>/<repo_name>_源码解读.md`
+- 快速上手：`<分析目录>/<repo_name>_快速上手.md`
 
 ## 交付后
 
