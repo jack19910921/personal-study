@@ -1,0 +1,13 @@
+{
+  "title": "Context Kubernetes: Declarative Orchestration of Enterprise Knowledge for Agentic AI Systems",
+  "title_zh": "Context Kubernetes：面向 Agentic AI 系统的企业知识声明式编排",
+  "authors": ["Charafeddine Mouzouni"],
+  "affiliation": "OPIT – Open Institute of Technology, Cohorte AI, Paris, France",
+  "arxiv_id": "2604.11623",
+  "arxiv_url": "https://arxiv.org/abs/2604.11623",
+  "date_published": "2026-04-13",
+  "date_reviewed": "2026-04-14",
+  "keywords": ["Context orchestration", "agentic AI infrastructure", "declarative architecture", "enterprise knowledge management", "AI governance", "organizational intelligence", "Kubernetes"],
+  "abstract": "We introduce Context Kubernetes, an architecture for orchestrating enterprise knowledge in agentic AI systems, together with a prototype implementation and experimental evaluation. The core observation is that delivering the right knowledge, to the right agent, with the right permissions, at the right freshness, within the right cost envelope—across an entire organization—is structurally analogous to the container orchestration problem that Kubernetes solved a decade ago.",
+  "review_file": "报告.md"
+}

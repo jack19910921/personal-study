@@ -1,0 +1,14 @@
+{
+  "title": "DeepSeek: Paradigm Shifts and Technical Evolution in Large AI Models",
+  "title_zh": "DeepSeek：大模型的范式转移与技术演进",
+  "authors": ["Luolin Xiong", "Haofen Wang", "Xi Chen", "Lu Sheng", "Yun Xiong", "Jingping Liu", "Yanghua Xiao", "Huajun Chen", "Qing-Long Han", "Yang Tang"],
+  "affiliation": "华东理工大学, 同济大学, 复旦大学, 北京航空航天大学, 浙江大学, 斯威本科技大学",
+  "arxiv_id": "2507.09955",
+  "arxiv_url": "https://arxiv.org/abs/2507.09955",
+  "journal": "IEEE/CAA Journal of Automatica Sinica",
+  "date_published": "2025-07-14",
+  "date_reviewed": "2026-04-14",
+  "keywords": ["Large AI models", "DeepSeek", "reasoning capability", "test-time scaling", "reinforcement learning"],
+  "abstract": "This paper reviews the evolution of large AI models focusing on paradigm shifts, the mainstream LLM paradigm, and the DeepSeek paradigm. It highlights novel algorithms including MLA, MoE, MTP, and GRPO, and explores engineering breakthroughs in scaling, training, inference, and system-level optimization.",
+  "review_file": "报告.md"
+}
