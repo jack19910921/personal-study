@@ -1,0 +1,13 @@
+{
+  "title": "DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning",
+  "title_zh": "DeepSeek-R1：通过强化学习激励大模型的推理能力",
+  "authors": ["DeepSeek-AI"],
+  "affiliation": "DeepSeek",
+  "arxiv_id": "2501.12948",
+  "arxiv_url": "https://arxiv.org/abs/2501.12948",
+  "date_published": "2025-01-23",
+  "date_reviewed": "2026-04-14",
+  "keywords": ["reasoning capability", "reinforcement learning", "GRPO", "chain-of-thought", "RLHF", "self-evolution", "R1-Zero"],
+  "abstract": "General reasoning represents a long-standing and formidable challenge in artificial intelligence. This paper shows that the reasoning abilities of LLMs can be incentivized through pure reinforcement learning, obviating the need for human-labeled reasoning trajectories. The proposed RL framework facilitates the emergent development of advanced reasoning patterns, such as self-reflection, verification, and dynamic strategy adaptation.",
+  "review_file": "报告.md"
+}
