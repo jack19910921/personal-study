@@ -1,0 +1,18 @@
+{
+  "name": "hermes-agent",
+  "owner": "NousResearch",
+  "url": "https://github.com/NousResearch/hermes-agent",
+  "branch": "main",
+  "last_commit": "1e5e1e822bc7bbf2a9defe12384745dc8730c23",
+  "last_commit_date": "2026-04-14",
+  "license": "MIT",
+  "language": "Python",
+  "total_lines": 396961,
+  "source_lines": 212102,
+  "test_lines": 184859,
+  "test_count": 11397,
+  "analysis_date": "2026-04-15",
+  "analysis_version": "v2.0",
+  "analyzer": "Claude Code (source-reading skill)",
+  "focus_areas": ["self-evolution", "prompt-engineering", "context-engineering", "harness-engineering"]
+}
