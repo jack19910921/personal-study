@@ -1,0 +1,18 @@
+{
+  "name": "hermes-agent",
+  "owner": "NousResearch",
+  "url": "https://github.com/NousResearch/hermes-agent",
+  "branch": "main",
+  "last_commit": "1e5e1e822bc7bbf2a9defe12384745dc8730c23",
+  "last_commit_date": "2026-04-14",
+  "last_commit_message": "fix: ESC cancels secret/sudo prompts, clearer skip messaging (#9902)",
+  "license": "MIT",
+  "language": "Python",
+  "total_lines": 396961,
+  "source_lines": 212102,
+  "test_lines": 184859,
+  "test_count": 11397,
+  "description": "The self-improving AI agent built by Nous Research. It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, searches its own past conversations, and builds a deepening model of who you are across sessions.",
+  "analysis_date": "2026-04-15",
+  "analyzer": "Claude Code (source-reading skill)"
+}
