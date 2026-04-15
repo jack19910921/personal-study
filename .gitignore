@@ -1,2 +1,6 @@
 # Exclude embedded git repo
 coding/
+
+# Python
+**/__pycache__/
+*.pyc
