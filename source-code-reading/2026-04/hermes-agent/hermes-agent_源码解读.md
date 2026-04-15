@@ -631,36 +631,283 @@ flowchart TD
 
 ---
 
-## 9. 关键设计决策
+## 9. RL 训练基础设施（Atropos 集成）
 
-### 9.1 为什么用注册表而不是集中管理工具？
+Hermes Agent 不仅是一个交互式 Agent 框架，还提供了一套完整的 **强化学习训练基础设施**，通过与 Atropos（NousResearch 的 RL 训练框架）集成，实现从 Agent 交互轨迹到模型训练的闭环。
 
-| 优点 | 缺点 |
-|---|---|
-| 新增工具只需 1 个文件 + 1 行 import | 调试注册顺序问题较难 |
-| 工具文件自治，易于独立测试 | 注册在模块 import 时发生，无法懒加载 |
-| 避免超大单文件（重构前 model_tools.py 2,400+ 行） | 循环依赖需要小心（registry.py 无上游依赖） |
+### 9.1 两阶段架构
 
-### 9.2 Profile 多实例隔离
+核心设计在 `environments/hermes_base_env.py`。Hermes 的 RL 环境支持两种操作模式，对应训练的不同阶段：
 
-`hermes_constants.py:get_hermes_home()` 是所有路径的**单一真相源**：
+| 阶段 | 服务器类型 | 工具调用解析 | 适用场景 |
+|---|---|---|---|
+| **Phase 1** | OpenAI Server（VLLM/SGLang/OpenRouter/OpenAI API） | 服务器原生解析 `tool_calls` | SFT 数据生成、验证器测试、评估 |
+| **Phase 2** | VLLM ManagedServer | 客户端 ToolCallParser 解析 | **完整 RL 训练**（token 级追踪） |
 
+**模式检测**（`hermes_base_env.py:328-344`）：
 ```python
-def get_hermes_home() -> Path:
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+def _use_managed_server(self) -> bool:
+    server = self.server.servers[0]
+    from atroposlib.envs.server_handling.openai_server import OpenAIServer
+    return not isinstance(server, OpenAIServer)  # VLLM/SGLang → True
 ```
 
-`_apply_profile_override()`（hermes_cli/main.py:L83+）在模块导入前设置 `HERMES_HOME`，实现**完全隔离的多实例**。
+**Phase 2 为什么需要 ManagedServer**：RL 训练（如 GRPO/PPO）需要精确的 token IDs、logprobs 和 loss mask。ManagedServer 通过 vLLM 的 `/generate` 端点获取这些数据，而非简单的 `/v1/chat/completions`。
 
-### 9.3 Gateway 为每条消息新建 AIAgent 实例
+### 9.2 HermesAgentLoop —— RL 环境中的对话引擎
 
-这看起来"浪费"，但实际上是**保证 Prompt 缓存一致性**的关键设计：
-- 每条消息新建实例 → 每次都从 SQLite 恢复系统提示词 → 确保与前一轮完全相同
-- 如果用长连接实例 → 中途 memory 变化会导致系统提示改变 → 缓存前缀断裂
+`environments/agent_loop.py` 实现了一个**独立的、可复用的工具调用循环**，专门用于 RL 训练场景。它与 `run_agent.py` 的主循环结构相同，但做了精简：
+
+```
+用户任务 → 系统提示 → 循环(LLM 调用 → 工具执行 → 结果注入) → AgentResult
+```
+
+**核心差异**（相比 `run_agent.py` 主循环）：
+
+| 特性 | `run_agent.py` 主循环 | `HermesAgentLoop` |
+|---|---|---|
+| 系统提示构建 | 14 层组装（PromptBuilder） | 简单系统提示（配置传入） |
+| 记忆系统 | MEMORY.md + Skill + SQLite | 禁用（memory/session_search 返回错误） |
+| 上下文压缩 | ContextCompressor | 无（max_turns 限制即可） |
+| 错误恢复 | 降级链 + 凭证池 + 重试 | API 失败直接返回 |
+| 推理提取 | 多种格式 | 统一 `_extract_reasoning_from_message()` |
+
+**HermesAgentLoop.run() 关键代码段**（`agent_loop.py:175-523`）：
+
+```python
+async def run(self, messages):
+    for turn in range(self.max_turns):
+        # 1. API 调用（标准 OpenAI 格式，传入 tools= schemas）
+        response = await self.server.chat_completion(**chat_kwargs)
+
+        # 2. 提取推理内容（reasoning_content / reasoning / reasoning_details）
+        reasoning = _extract_reasoning_from_message(assistant_msg)
+
+        # 3. 回退解析：若无结构化 tool_calls 但内容含 
+```
+
+
+**完整代码流程**（`agent_loop.py:204-512`）：
+
+1. 每轮调用 `server.chat_completion()`，传入 tool schemas
+2. 检查 `response.choices[0].message.tool_calls`
+3. 如果无结构化 tool_calls 但内容含 `` 标签，使用回退解析器（`environments/tool_call_parsers/get_parser('hermes')`）提取工具调用
+4. 工具调用分发：
+   - `todo` / `memory` / `session_search` 本地处理或禁用
+   - 其他工具通过 `handle_function_call()` 派发，在 ThreadPoolExecutor（128 workers）中运行
+5. 工具结果经过 `maybe_persist_tool_result()` 预算裁剪后注入消息
+6. 如果模型不再调用工具，返回 `AgentResult(finished_naturally=True)`
+7. 如果达到 max_turns，返回 `AgentResult(finished_naturally=False)`
+
+**AgentResult 数据结构**（`agent_loop.py:63-79`）：
+
+```python
+@dataclass
+class AgentResult:
+    messages: List[Dict]         # 完整对话历史（OpenAI 格式）
+    managed_state: Optional[Dict] # Phase 2 的 SequenceNodes（含 tokens/logprobs/masks）
+    turns_used: int              # 实际 LLM 调用次数
+    finished_naturally: bool      # 模型是否自然停止（vs 达到 max_turns）
+    reasoning_per_turn: List      # 每轮的推理内容提取
+    tool_errors: List[ToolError]  # 工具执行错误记录
+```
+
+**线程池设计**（`agent_loop.py:33`）：
+
+```python
+_tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=128)
+```
+
+为什么要 128 个 worker？注释明确指出：大规模并行评估场景（如 89 个 TB2 任务同时做工具调用）需要足够的线程避免饥饿。Modal/Docker/Daytona 后端在内部使用 `asyncio.run()`，必须在独立线程中运行以避免与 Atropos 的事件循环死锁。
+
+### 9.3 12 种 Tool Call Parser（多模型家族适配）
+
+Phase 2 使用 VLLM ManagedServer 时，`/generate` 端点返回纯文本而非结构化的 `tool_calls`。Hermes 实现了 **12 个独立的客户端解析器**，每个对应一个模型家族的输出格式：
+
+| Parser | 适配模型 | 注册文件 |
+|---|---|---|
+| `hermes` | Nous Hermes 系列 | `hermes_parser.py` |
+| `mistral` | Mistral | `mistral_parser.py` |
+| `llama3_json` | Llama 3 | `llama_parser.py` |
+| `qwen` | Qwen | `qwen_parser.py` |
+| `deepseek_v3` | DeepSeek V3 | `deepseek_v3_parser.py` |
+| `deepseek_v3_1` | DeepSeek V3.1 | `deepseek_v3_1_parser.py` |
+| `kimi_k2` | Kimi K2 | `kimi_k2_parser.py` |
+| `glm45` | GLM-4.5 | `glm45_parser.py` |
+| `glm47` | GLM-4.7 | `glm47_parser.py` |
+| `qwen3_coder` | Qwen3 Coder | `qwen3_coder_parser.py` |
+| `longcat` | LongCat | `longcat_parser.py` |
+
+**注册表机制**（`tool_call_parsers/__init__.py:62-100`）：
+
+```python
+PARSER_REGISTRY: Dict[str, Type[ToolCallParser]] = {}
+
+@register_parser("hermes")
+class HermesToolCallParser(ToolCallParser): ...
+
+def get_parser(name: str) -> ToolCallParser:
+    return PARSER_REGISTRY[name]()
+```
+
+**Parser 接口**（`tool_call_parsers/__init__.py:35-58`）：
+
+```python
+class ToolCallParser(ABC):
+    @abstractmethod
+    def parse(self, text: str) -> ParseResult:
+        # 返回 (content, tool_calls)
+        # content = 工具调用标记被剥离后的文本
+        # tool_calls = ChatCompletionMessageToolCall 对象列表
+```
+
+每个 Parser 都是**独立实现**——它们是对 vLLM 服务端 `extract_tool_calls()` 逻辑的客户端重实现，只依赖标准库（`re`, `json`, `uuid`）和 `openai.types`。这意味着 Hermes 的 RL 训练不需要 vLLM 作为依赖，只需要模型输出符合预期的文本格式。
+
+### 9.4 ToolContext —— Reward 函数的全工具访问
+
+`environments/tool_context.py` 是 RL 训练中最精巧的设计之一。它给 reward/verification 函数提供**对 Hermes Agent 所有工具的无限制访问**，作用域限定在单个 rollout 的 `task_id`。
+
+**核心设计理念**：验证器作者决定使用哪些工具，没有硬编码限制。
+
+```python
+class ToolContext:
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+
+    def terminal(self, command, timeout=180) -> Dict  # 在 rollout 的终端会话中执行命令
+    def read_file(self, path) -> Dict                  # 读取文件
+    def write_file(self, path, content) -> Dict        # 写入文本文件
+    def upload_file(self, local, remote) -> Dict       # 二进制安全上传
+    def download_file(self, remote, local) -> Dict     # 二进制安全下载
+    def search(self, query, path) -> Dict              # 文件系统搜索
+    def web_search(self, query) -> Dict                # 网络搜索
+    def browser_navigate(self, url) -> Dict            # 浏览器导航
+    def browser_snapshot(self) -> Dict                 # 浏览器快照
+    def call_tool(self, name, args) -> str             # 通用工具调用（逃逸舱口）
+    def cleanup(self)                                  # 释放所有资源
+```
+
+**为什么 task_id 很重要**：同一个 `task_id` 意味着 terminal/browser 会话与模型在 rollout 中使用的是**同一个**。所有文件系统状态、进程、浏览器标签页都保持不变。验证器可以直接在模型的沙箱中运行测试。
+
+**资源清理**（`tool_context.py:440-474`）：`cleanup()` 按顺序清理：
+1. `process_registry.kill_all(task_id)` — 杀掉后台进程
+2. `cleanup_vm(task_id)` — 释放 VM（Modal/Docker/Daytona）
+3. `cleanup_browser(task_id)` — 关闭浏览器会话（抑制 debug 输出避免日志污染）
+
+### 9.5 collect_trajectory —— 从 Agent 循环到 ScoredDataItem
+
+`hermes_base_env.py:collect_trajectory()`（L489-644）是 RL 训练的核心编排函数：
+
+```
+1. 生成唯一 task_id（用于终端/浏览器会话隔离）
+2. 解析工具集（每组一次，在 collect_trajectories 中）
+3. 构建初始消息（system prompt + user prompt）
+4. 判断操作模式：
+   - Phase 2: async with server.managed_server() → HermesAgentLoop(managed) → result
+   - Phase 1: HermesAgentLoop(server) → result
+5. 检查产出：如果只有 system+user 消息（API 首轮失败），跳过 reward 计算
+6. 创建 ToolContext(task_id) → compute_reward(item, result, ctx)
+7. finally: ctx.cleanup()
+8. 构建 ScoredDataItem：
+   - Phase 2: 从 managed_state['nodes'] 提取 tokens/masks/logprobs
+   - Phase 1: 用 tokenizer 编码对话文本得到近似 tokens
+9. 附加 messages（用于 wandb 展示）
+10. 返回 (scored_item, [])
+```
+
+**关键代码段**（`hermes_base_env.py:604-644`）：
+
+```python
+nodes = (result.managed_state or {}).get("nodes", [])
+if nodes:
+    # Phase 2: 真实 token 数据
+    node = nodes[-1]  # 最终序列节点 = 完整轨迹
+    scored_item = {
+        "tokens": node.tokens,
+        "masks": node.masked_tokens,
+        "scores": reward,
+    }
+    if hasattr(node, "logprobs") and node.logprobs:
+        scored_item["advantages"] = None  # 由 trainer 计算
+        scored_item["ref_logprobs"] = None
+else:
+    # Phase 1: 占位 tokens（不适合训练，但允许 SFT 数据生成工作）
+    tokens = self.tokenizer.encode(full_text, add_special_tokens=True)
+    scored_item = {
+        "tokens": tokens,
+        "masks": [-100] + tokens[1:],  # 第一个 token 作为 prompt 被 mask
+        "scores": reward,
+    }
+```
+
+### 9.6 HermesSweEnv —— SWE-Bench 示例
+
+`environments/hermes_swe_env/hermes_swe_env.py` 是一个具体的 RL 环境实现，用于软件工程任务：
+
+**配置**（`hermes_swe_env.py:83-111`）：
+
+- 工具集：`terminal` + `file` + `web`（编码任务必需）
+- 终端后端：`modal`（云隔离，每个 rollout 一个沙箱）
+- 数据集：`bigcode/humanevalpack`（可替换）
+- 最大轮次：30，最大 token：4096
+- 系统提示："You are a skilled software engineer..."
+
+**Reward 计算**（`hermes_swe_env.py:160-193`）：
+
+```python
+async def compute_reward(self, item, result, ctx: ToolContext) -> float:
+    test_code = item.get("test", item.get("test_code", ""))
+    if test_code:
+        # 在模型的 Modal 沙箱中运行测试
+        test_result = ctx.terminal(f'cd /workspace && python3 -c "{test_code}"', timeout=60)
+        if test_result["exit_code"] == 0:
+            return 1.0  # 测试通过
+    # 部分得分：检查是否创建了 Python 文件
+    file_check = ctx.terminal("find /workspace -name '*.py' -newer /tmp/.start_marker")
+    if file_check["exit_code"] == 0 and file_check.get("output", "").strip():
+        return 0.1  # 至少创建了文件
+    return 0.0
+```
+
+这个设计的关键点：`ctx.terminal()` 使用的是与模型 rollout 期间**相同的 Modal 沙箱**，所以模型创建的所有文件、安装的依赖、启动的进程都对验证器可见。
+
+### 9.7 RL 训练全景流程图
+
+```mermaid
+flowchart TD
+    A["Atropos Trainer<br/>GRPO/PPO"] --> B["HermesAgentBaseEnv<br/>collect_trajectories()"]
+    B --> C["_resolve_tools_for_group()<br/>采样工具集分布"]
+    C --> D["collect_trajectory()<br/>x group_size 并行"]
+    D --> E{"_use_managed_server?"}
+    E -->|Phase 1| F1["OpenAI Server<br/>原生 tool_calls"]
+    E -->|Phase 2| F2["ManagedServer +<br/>ToolCallParser"]
+    F1 --> G["HermesAgentLoop.run()<br/>LLM → 工具 → 结果"]
+    F2 --> G
+    G --> H["AgentResult<br/>messages + managed_state"]
+    H --> I{"产出有效数据?"}
+    I -->|否| J["跳过 reward, reward=0"]
+    I -->|是| K["ToolContext(task_id)<br/>全工具访问"]
+    K --> L["compute_reward()<br/>ctx.terminal 跑测试"]
+    L --> M["ScoredDataItem<br/>tokens/masks/scores"]
+    J --> M
+    M --> N["ScoredDataGroup<br/>汇总给 Atropos"]
+    N --> O["Atropos 训练步骤<br/>GRPO/PPO 更新模型"]
+    O --> A
+```
+
+### 9.8 工具集分布采样
+
+RL 训练不需要每次 rollout 都用同样的工具集。`hermes_base_env.py:289-322` 支持两种工具集解析策略：
+
+1. **显式列表**：`enabled_toolsets=['terminal', 'file']` — 固定工具集
+2. **分布采样**：`distribution='development'` — 从 `toolset_distributions.py` 中预定义的分布中随机采样
+
+每次 `collect_trajectories()` 组调用时解析一次工具集，组内所有并行 rollout 共享同一工具集。这确保了组内对比的公平性。
 
 ---
 
 ## 10. 精妙之处
+
 
 ### 10.1 安全 Stdout 包装
 
@@ -745,6 +992,11 @@ CLI 主线程 → 全局持久化 loop
 | `agent/retry_utils.py` | ~58 | 抖动退避 |
 | `tools/skill_manager_tool.py` | ~400+ | Skill 创建与管理 |
 | `tools/memory_tool.py` | ~300+ | 持久化 Memory |
+| `environments/hermes_base_env.py` | ~715 | Atropos 集成 / 两阶段架构 |
+| `environments/agent_loop.py` | ~535 | RL 对话引擎 |
+| `environments/tool_context.py` | ~475 | Reward 函数全工具访问 |
+| `environments/tool_call_parsers/` | ~200+ | 12 种工具调用解析器 |
+| `environments/hermes_swe_env/` | ~230 | SWE-Bench 环境示例 |
 
 ---
 
@@ -769,11 +1021,12 @@ CLI 主线程 → 全局持久化 loop
 |---|---|
 | 2026-04-15 | 初稿（v1.0）：整体架构、核心循环、工具系统 |
 | 2026-04-15 | v2.0 深度精读：自我进化机制详解、Prompt Engineering 分层、Context Engineering 算法、Harness Engineering 完整恢复链、Mermaid 图修复 |
+| 2026-04-15 | v2.1 RL 训练专题：两阶段架构（Phase 1 OpenAI / Phase 2 VLLM）、HermesAgentLoop 对话引擎、12 种 Tool Call Parser、ToolContext 全工具访问、collect_trajectory 编排流程、HermesSweEnv SWE-Bench 示例 |
 
 ---
 
 **分析局限性**：
 - 未深入阅读每个工具的具体实现（40+ 工具）
-- RL 训练环境（`environments/`）仅做概要了解
+- RL 训练环境已深度解读核心文件，但未逐一分析每个 Tool Call Parser 的具体正则逻辑
 - ACP 适配器仅查看结构，未深入协议细节
 - 未实际运行代码验证行为
